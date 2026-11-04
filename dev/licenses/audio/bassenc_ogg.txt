@@ -1,0 +1,142 @@
+BASSenc_OGG 2.4
+Copyright (c) 2016-2024 Un4seen Developments Ltd. All rights reserved.
+
+
+BASSenc_OGG is an extension to the BASSenc add-on that allows BASS channels to
+be Ogg Vorbis encoded, with support for OGGENC options.
+
+
+Requirements
+============
+BASS 2.4 and BASSenc 2.4.12 or above are required.
+
+
+Using BASSenc_OGG
+=================
+The usage information in the BASS.TXT file (from the BASS package) is also
+applicable to BASSenc_OGG and other add-ons.
+
+
+Included files
+==============
+Win32 version
+-------------
+BASSENC_OGG.TXT     This file
+BASSENC_OGG.DLL     32-bit BASSenc_OGG module
+BASSENC_OGG.CHM     BASSenc_OGG documentation
+X64\
+  BASSENC_OGG.DLL     64-bit BASSenc_OGG module
+C\
+  BASSENC_OGG.H       BASSenc_OGG C/C++ header file
+  BASSENC_OGG.LIB     32-bit BASSenc_OGG import library
+  X64\
+    BASSENC_OGG.LIB     64-bit BASSenc_OGG import library
+DELPHI\
+  BASSENC_OGG.PAS     BASSenc_OGG Delphi/Pascal unit
+VB\
+  BASSENC_OGG.BAS     BASSenc_OGG Visual Basic module
+
+macOS version
+-------------
+BASSENC_OGG.TXT     This file
+LIBBASSENC_OGG.DYLIB  BASSenc_OGG module
+BASSENC_OGG.CHM     BASSenc_OGG documentation
+C\
+  BASSENC_OGG.H       BASSenc_OGG C/C++/Objective-C header file
+DELPHI\
+  BASSENC_OGG.PAS     BASSenc_OGG Delphi/Pascal unit
+
+Linux version
+-------------
+BASSENC_OGG.TXT     This file
+BASSENC_OGG.CHM     BASSenc_OGG documentation
+LIBS\               BASSenc_OGG modules
+  ...
+C\
+  BASSENC_OGG.H       BASSenc_OGG C/C++ header file
+DELPHI\
+  BASSENC_OGG.PAS     BASSenc_OGG Delphi/Pascal unit
+
+Android version
+---------------
+BASSENC_OGG.TXT     This file
+BASSENC_OGG.CHM     BASSenc_OGG documentation
+LIBS\               BASSenc_OGG modules
+  ...
+C\
+  BASSENC_OGG.H       BASSenc_OGG C/C++ header file
+JAVA\COM\UN4SEEN\BASS\
+  BASSENC_OGG.JAVA    BASSenc_OGG Java class
+
+iOS version
+-----------
+BASSENC_OGG.TXT     This file
+BASSENC_OGG.XCFRAMEWORK  BASSenc_OGG framework
+BASSENC_OGG.CHM     BASSenc_OGG documentation
+BASSENC_OGG.H       BASSenc_OGG C/C++/Objective-C header file
+
+
+Latest Version
+==============
+The latest versions of BASSenc_OGG & BASS can be found at the BASS website:
+
+	www.un4seen.com
+
+
+Licence
+=======
+BASSenc_OGG is free to use with BASS.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, BASSENC_OGG IS PROVIDED
+"AS IS", WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY
+AND/OR FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS SHALL NOT BE HELD
+LIABLE FOR ANY DAMAGE THAT MAY RESULT FROM THE USE OF BASSENC_OGG. YOU USE
+BASSENC_OGG ENTIRELY AT YOUR OWN RISK.
+
+Usage of BASSenc_OGG indicates that you agree to the above conditions.
+
+All trademarks and other registered names contained in the BASSenc_OGG
+package are the property of their respective owners.
+
+
+Credits
+=======
+Ogg Vorbis encoding is based on libogg/vorbis,
+Copyright (c) 2002-2020 Xiph.org Foundation
+
+
+History
+=======
+These are the major (and not so major) changes in each release, along with the
+functions/options that are introduced/affected by them. There are other little
+tweaks and fixes made along the way too.
+
+2.4.3 - 20/9/2024
+-----------------
+* Support for picture embedding (--picture option)
+	BASS_Encode_OGG_Start/File
+
+2.4.2 - 26/9/2023
+-----------------
+* Faster encoding
+* Fixed multi-channel order
+* Disable reordering channels for Vorbis spec (--no-reorder option)
+	BASS_Encode_OGG_Start/File
+
+2.4.1 - 3/12/2020
+-----------------
+* Bitstream chaining for option/metadata changes
+	BASS_Encode_OGG_NewStream
+* Updated to libvorbis 1.3.7
+
+2.4 - 2/9/2016
+--------------
+* First release
+
+
+Bug reports, Suggestions, Comments, Enquiries, etc
+==================================================
+If you have any of the aforementioned please visit the BASS forum at the
+website.
+

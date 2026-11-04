@@ -1,0 +1,5 @@
+# Python dependencies for ABMSynth.
+PySide6==6.11.2
+numpy==2.5.3
+fonttools==4.65.0
+pychord==1.4.0

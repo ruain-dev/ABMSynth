@@ -1,0 +1,179 @@
+BASSenc_OPUS 2.4
+Copyright (c) 2016-2026 Un4seen Developments Ltd. All rights reserved.
+
+
+BASSenc_OPUS is an extension to the BASSenc add-on that allows BASS channels
+to be Opus encoded, with support for OPUSENC options.
+
+
+Requirements
+============
+BASS 2.4 and BASSenc 2.4.12 or above are required.
+
+
+Using BASSenc_OPUS
+==================
+The usage information in the BASS.TXT file (from the BASS package) is also
+applicable to BASSenc_OPUS and other add-ons.
+
+
+Included files
+==============
+Win32 version
+-------------
+BASSENC_OPUS.TXT    This file
+BASSENC_OPUS.DLL    32-bit BASSenc_OPUS module
+BASSENC_OPUS.CHM    BASSenc_OPUS documentation
+X64\
+  BASSENC_OPUS.DLL    64-bit BASSenc_OPUS module
+C\
+  BASSENC_OPUS.H      BASSenc_OPUS C/C++ header file
+  BASSENC_OPUS.LIB    32-bit BASSenc_OPUS import library
+  X64\
+    BASSENC_OPUS.LIB    64-bit BASSenc_OPUS import library
+DELPHI\
+  BASSENC_OPUS.PAS    BASSenc_OPUS Delphi/Pascal unit
+VB\
+  BASSENC_OPUS.BAS    BASSenc_OPUS Visual Basic module
+
+macOS version
+-------------
+BASSENC_OPUS.TXT    This file
+LIBBASSENC_OPUS.DYLIB  BASSenc_OPUS module
+BASSENC_OPUS.CHM    BASSenc_OPUS documentation
+C\
+  BASSENC_OPUS.H      BASSenc_OPUS C/C++/Objective-C header file
+DELPHI\
+  BASSENC_OPUS.PAS    BASSenc_OPUS Delphi/Pascal unit
+
+Linux version
+-------------
+BASSENC_OPUS.TXT    This file
+BASSENC_OPUS.CHM    BASSenc_OPUS documentation
+LIBS\               BASSenc_OPUS modules
+  ...
+C\
+  BASSENC_OPUS.H      BASSenc_OPUS C/C++ header file
+DELPHI\
+  BASSENC_OPUS.PAS    BASSenc_OPUS Delphi/Pascal unit
+
+Android version
+---------------
+BASSENC_OPUS.TXT    This file
+BASSENC_OPUS.CHM    BASSenc_OPUS documentation
+LIBS\               BASSenc_OPUS modules
+  ...
+C\
+  BASSENC_OPUS.H      BASSenc_OPUS C/C++ header file
+JAVA\COM\UN4SEEN\BASS\
+  BASSENC_OPUS.JAVA   BASSenc_OPUS Java class
+
+iOS version
+-----------
+BASSENC_OPUS.TXT    This file
+BASSENC_OPUS.XCFRAMEWORK  BASSenc_OPUS framework
+BASSENC_OPUS.CHM    BASSenc_OPUS documentation
+BASSENC_OPUS.H      BASSenc_OPUS C/C++/Objective-C header file
+
+
+Latest Version
+==============
+The latest versions of BASSenc_OPUS & BASS can be found at the BASS website:
+
+	www.un4seen.com
+
+
+Licence
+=======
+BASSenc_OPUS is free to use with BASS.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, BASSENC_OPUS IS PROVIDED
+"AS IS", WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY
+AND/OR FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS SHALL NOT BE HELD
+LIABLE FOR ANY DAMAGE THAT MAY RESULT FROM THE USE OF BASSENC_OPUS. YOU USE
+BASSENC_OPUS ENTIRELY AT YOUR OWN RISK.
+
+Usage of BASSenc_OPUS indicates that you agree to the above conditions.
+
+All trademarks and other registered names contained in the BASSenc_OPUS
+package are the property of their respective owners.
+
+
+Credits
+=======
+Opus encoding is based on libOpus, Copyright 2001-2011 Xiph.Org,
+ Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry,
+ CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo.
+And libSpeexDSP, Copyright 2002-2008 Xiph.Org, Jean-Marc Valin.
+
+
+History
+=======
+These are the major (and not so major) changes in each release, along with the
+functions/options that are introduced/affected by them. There are other little
+tweaks and fixes made along the way too.
+
+2.4.4.2 - 4/6/2026
+------------------
+* Updated to libOpus 1.6.1
+
+2.4.4.1 - 2/1/2026
+------------------
+* Updated to libOpus 1.6
+
+2.4.4 - 2/8/2024
+----------------
+* Raw Opus output without an Ogg container (--no-ogg option)
+	BASS_Encode_OPUS_Start
+* Custom channel mapping/coupling with --mapping-255 option
+	BASS_Encode_OPUS_Start/File
+* Updated to libOpus 1.5.2
+
+2.4.3 - 26/9/2023
+-----------------
+* Disable reordering channels for Opus spec (--no-reorder option)
+	BASS_Encode_OPUS_Start/File
+* Channel mapping family 255 (--mapping-255 option)
+	BASS_Encode_OPUS_Start/File
+
+2.4.2.1 - 4/5/2023
+------------------
+* Updated to libOpus 1.4
+* SSE is required on x86 platforms
+
+2.4.2 - 3/12/2020
+-----------------
+* Bitstream chaining for option/metadata changes
+	BASS_Encode_OPUS_NewStream
+* Support for track number tag (--tracknumber option)
+	BASS_Encode_OPUS_Start/File
+* Updated to libOpus 1.3.1
+
+2.4.1 - 1/11/2018
+-----------------
+* Support for picture embedding (--picture option)
+	BASS_Encode_OPUS_Start/File
+* Support for advanced contols (--set-ctl-int option)
+	BASS_Encode_OPUS_Start/File
+* Updated to libOpus 1.3
+
+2.4.0.2 - 4/7/2017
+------------------
+* Updated to libOpus 1.2.1
+* Fixed channel order in multi-channel encoding
+
+2.4.0.1 - 24/1/2017
+-------------------
+* Updated to libOpus 1.1.4
+
+2.4 - 2/9/2016
+--------------
+* First release
+
+
+Bug reports, Suggestions, Comments, Enquiries, etc
+==================================================
+If you have any of the aforementioned, please visit the BASS forum at the
+website.
+

@@ -1,0 +1,51 @@
+[
+  {
+    "path": "librosa\\LICENSE.md",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/LICENSE.md",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "79aa4a8086d51ac89f9a7322f546670cdef73e758c67f04587b7af8afafd6df8",
+    "bytes": 766
+  },
+  {
+    "path": "librosa\\pitch.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/core/pitch.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "63fbe3b6a45198731a4be7ef4fa5876770fbf7a3c5815853462d340e69caf593",
+    "bytes": 33979
+  },
+  {
+    "path": "librosa\\onset.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/onset.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "375621605804840863e61652c1a3640e033042b0fd37bf6762376e1b6c2ed4eb",
+    "bytes": 21320
+  },
+  {
+    "path": "librosa\\rhythm.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/feature/rhythm.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "7130e83fafb0da60a654d0f9c61fc59dfbcc07946e34f42c3b770eb91bc2af7a",
+    "bytes": 34270
+  },
+  {
+    "path": "librosa\\filters.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/filters.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "a818a155550176f8e412520a0835359ef47f9a730ba8cd7695e8adb7de4507c1",
+    "bytes": 43125
+  },
+  {
+    "path": "librosa\\audio.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/core/audio.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "abc519c16b6f3b26907b23fae531d6f087820b154b9a7717db07f36ed9566757",
+    "bytes": 74548
+  },
+  {
+    "path": "librosa\\convert.py",
+    "url": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/librosa/core/convert.py",
+    "commit": "08e2c0a20d650fe00f10aaf3a1eaa9698ac19641",
+    "sha256": "093a8b2e17c5f9ea90b25d6e2e5cd5a7bb4c3b53dcb40bfb22567b39add9fd2f",
+    "bytes": 82986
+  }
+]

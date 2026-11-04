@@ -1,0 +1,1045 @@
+{
+  "schema": 1,
+  "review_date": "2026-11-04",
+  "release_cleared": false,
+  "components": [
+    {
+      "id": "abmsynth",
+      "name": "ABMSynth",
+      "version": "1.0.0",
+      "category": "own",
+      "license": "PolyForm Noncommercial 1.0.0 + Music Production Additional Permission 1.0",
+      "description_id": "licenses.role_abmsynth",
+      "homepage": "https://polyformproject.org/licenses/noncommercial/1.0.0",
+      "documents": [
+        {
+          "path": "abmsynth/LICENSE",
+          "source": "LICENSE",
+          "bytes": 4563,
+          "sha256": "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "abmsynth/ADDITIONAL_PERMISSIONS.md",
+          "source": "ADDITIONAL_PERMISSIONS.md",
+          "bytes": 2866,
+          "sha256": "e6bdec0a8bb402d4a663cab453275229208a2530225d67fa9e513109dfe2d846",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "version": "3.14.7",
+      "category": "open",
+      "license": "PSF License + bundled notices",
+      "description_id": "licenses.role_python",
+      "homepage": "https://docs.python.org/3/license.html",
+      "documents": [
+        {
+          "path": "python/LICENSE_PYTHON.txt",
+          "source": "installed Python/LICENSE_PYTHON.txt",
+          "bytes": 13804,
+          "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "qt",
+      "name": "Qt / PySide6 / Shiboken6",
+      "version": "6.11.2",
+      "category": "review",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only; LicenseRef-Qt-Commercial (bundled notice)",
+      "description_id": "licenses.role_qt",
+      "homepage": "https://doc.qt.io/qtforpython-6.11/licenses.html",
+      "documents": [
+        {
+          "path": "qt/PySide6/METADATA",
+          "source": "installed distribution PySide6/pyside6-6.11.2.dist-info/METADATA",
+          "bytes": 5416,
+          "sha256": "bddd6d1e6f840de4ecf6464c1afe885491c76d1081c72ce30744deaa74949276",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/PySide6/LicenseRef-Qt-Commercial.txt",
+          "source": "installed distribution PySide6/pyside6-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
+          "bytes": 470,
+          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/PySide6_Essentials/METADATA",
+          "source": "installed distribution PySide6_Essentials/pyside6_essentials-6.11.2.dist-info/METADATA",
+          "bytes": 3802,
+          "sha256": "a9bdd4937ee837eb46e0c38f9c0ab6c59a6f788d711b96b63c726247ca7a2379",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/PySide6_Essentials/LicenseRef-Qt-Commercial.txt",
+          "source": "installed distribution PySide6_Essentials/pyside6_essentials-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
+          "bytes": 470,
+          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/PySide6_Addons/METADATA",
+          "source": "installed distribution PySide6_Addons/pyside6_addons-6.11.2.dist-info/METADATA",
+          "bytes": 4168,
+          "sha256": "6c14f94cb03f754a3d8e9ada4d726dbc08aff04d4f0b4377483f9921aa646952",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/PySide6_Addons/LicenseRef-Qt-Commercial.txt",
+          "source": "installed distribution PySide6_Addons/pyside6_addons-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
+          "bytes": 470,
+          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/shiboken6/METADATA",
+          "source": "installed distribution shiboken6/shiboken6-6.11.2.dist-info/METADATA",
+          "bytes": 2542,
+          "sha256": "d118511674eb858e7e0666fae0de10ac79ae31800ad1215ad57285953d4ad241",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/shiboken6/LicenseRef-Qt-Commercial.txt",
+          "source": "installed distribution shiboken6/shiboken6-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
+          "bytes": 470,
+          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/qtmultimedia.txt",
+          "source": "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtmultimedia-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 234685,
+          "sha256": "be46ab1a277afcf2ce06c305466da813c71209c6d23ba7fede09e72fe9d6df5e",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/qtsvg.txt",
+          "source": "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtsvg-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 87470,
+          "sha256": "93d908ea1300802ad29f912b49d0597729a0babfbddb9ac77d42227ead133e89",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/qtimageformats.txt",
+          "source": "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtimageformats-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 90288,
+          "sha256": "84c1df89e680c71916a48cf6de33f63c1b98689f91e16bc9f93c6fc992d0ce8c",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/qtdeclarative.txt",
+          "source": "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtdeclarative-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 135359,
+          "sha256": "c941a5c73f104f96f22d3509b1fd4cf44ed439030a23b1a0f871616eca512824",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/qtbase.txt",
+          "source": "https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/qtbase-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 391382,
+          "sha256": "cd1cb3cea9fcffe596c80f1e6f117a80fc2ef5761c7b16bc16d919e474db4a8e",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/source-notices/pyside-shiboken.txt",
+          "source": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/pyside-setup-everywhere-src-6.11.2.tar.xz (original file contents; member names delimit the collection)",
+          "bytes": 98151,
+          "sha256": "3a01189e0837c81680fb3e243004551127574382c1738e9a43cb8267812bcb29",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/LGPL-3.0-only.txt",
+          "source": "Qt 6.11.2 source LICENSES/LGPL-3.0-only.txt",
+          "bytes": 7651,
+          "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "qt/GPL-3.0-only.txt",
+          "source": "Qt 6.11.2 source LICENSES/GPL-3.0-only.txt",
+          "bytes": 35147,
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg",
+      "version": "7.1.5",
+      "category": "lgpl",
+      "license": "LGPL version 2.1 or later",
+      "description_id": "licenses.role_ffmpeg",
+      "homepage": "https://ffmpeg.org/legal.html",
+      "documents": [
+        {
+          "path": "ffmpeg/COPYING.LGPLv2.1",
+          "source": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n7.1.5/COPYING.LGPLv2.1",
+          "bytes": 26517,
+          "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "ffmpeg/LICENSE.md",
+          "source": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n7.1.5/LICENSE.md",
+          "bytes": 4376,
+          "sha256": "cb48bf09a11f5fb576cddb0431c8f5ed0a60157a9ec942adffc13907cbe083f2",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "ffmpeg/zlib-LICENSE",
+          "source": "https://raw.githubusercontent.com/madler/zlib/v1.3.1/LICENSE",
+          "bytes": 1002,
+          "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [],
+      "build_configuration": "--prefix=/c/FFmpeg-n7.1.5/build/msvc/installed --disable-programs --disable-doc --disable-debug --enable-network --disable-lzma --enable-pic --disable-vulkan --disable-v4l2-m2m --disable-decoder=truemotion1 --disable-avdevice --disable-avfilter --enable-zlib --extra-cflags='-IC:/zlib-1.3.1/build/amd64' --extra-ldflags='-LIBPATH:C:/zlib-1.3.1/build/amd64' --toolchain=msvc --enable-shared --disable-static"
+    },
+    {
+      "id": "numpy",
+      "name": "NumPy",
+      "version": "2.5.3",
+      "category": "open",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "description_id": "licenses.role_numpy",
+      "homepage": "https://numpy.org/doc/stable/license.html",
+      "documents": [
+        {
+          "path": "numpy/LICENSE.txt",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/LICENSE.txt",
+          "bytes": 45831,
+          "sha256": "a804dff0ead9fadc5293456410bcbfc32bf024be9c4513459663fb7b442d2341",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+          "bytes": 1039,
+          "sha256": "d544761558b510866c21f7e8a2d5716fca76e0b98117e3b6b86314db7244d150",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/src/common/pythoncapi-compat/COPYING",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+          "bytes": 704,
+          "sha256": "aea41976c720f91bd19725c16916a1ace40eb1ea42620d340e587a5de4bbcea0",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/src/highway/LICENSE",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+          "bytes": 21155,
+          "sha256": "d208152e2777ffd0126eacc1bd21c0320d69e4e6b622d21a2a12a47e8ef73763",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+          "bytes": 1441,
+          "sha256": "b0fd592d4ead563148e3977e7b589169d46a5ef2ff133c755a81af880a3fc919",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+          "bytes": 1542,
+          "sha256": "a732977853530066790c42817087f4829b518dd98d340c916acbfd227e39d3cb",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/_core/src/umath/svml/LICENSE",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+          "bytes": 1573,
+          "sha256": "585483905b13d4b42f800c55ba99e89d6e2e33ccd5f503e201c07531d148ff41",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/fft/pocketfft/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+          "bytes": 1523,
+          "sha256": "8db000e158c162e7249787852d8c69764706502ccee725c06641b31c1e95c8af",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/linalg/lapack_lite/LICENSE.txt",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+          "bytes": 2314,
+          "sha256": "19060ef465e1797d682ee0fc3081bd25ab1395e995e43d25c9d13c95d9a3cd6b",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/ma/LICENSE",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/ma/LICENSE",
+          "bytes": 1616,
+          "sha256": "d78dbb208b80d92b4d333e41a4baae50d12444f46e53199fa7726a91de6e2da7",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/LICENSE.md",
+          "bytes": 3582,
+          "sha256": "b4bc2f4fa1c95778f1ed3dd8f14706bece399475b978f9f34b5d3cd72521b48a",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/distributions/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+          "bytes": 2805,
+          "sha256": "cf5619f25b112d5ce7c896efffc8e610bcb345dfadcc19f2c1460aa48fff2c9e",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/mt19937/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+          "bytes": 2986,
+          "sha256": "92c10699884321f1c2947fe2a70ab23b0fbf1507f756d89dd08f38c61fc3d4fa",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/pcg64/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+          "bytes": 1176,
+          "sha256": "41190663b77bee5302386495a07b7eabfbfa571aa0ae2f11da6764162062fc4f",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/philox/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+          "bytes": 1540,
+          "sha256": "322ac46d870c8aeead6c53adcccc839296fb3c8e456eae155081297daf7f8013",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/sfc64/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+          "bytes": 1253,
+          "sha256": "28cad82ce1379dc529df30da78ec012d7d0d1d576b03ddcb93388aee53659f59",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "numpy/numpy/random/src/splitmix64/LICENSE.md",
+          "source": "installed NumPy/numpy-2.5.3.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md",
+          "bytes": 340,
+          "sha256": "454ec7350e478e037061850b67395753b425b1cb0a34bbc26290b020bf89d763",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "pychord",
+      "name": "PyChord",
+      "version": "1.4.0",
+      "category": "open",
+      "license": "MIT",
+      "description_id": "licenses.role_pychord",
+      "homepage": "https://github.com/yuma-m/pychord",
+      "documents": [
+        {
+          "path": "pychord/LICENSE.txt",
+          "source": "PyChord 1.4.0 official wheel,dist-info/licenses/LICENSE",
+          "bytes": 1066,
+          "sha256": "4fce048abd8b1136930dc81206750772c242b8b5f1bd949a6056522f5b028cdd",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "librosa_analysis",
+      "name": "librosa analysis (adapted subset)",
+      "version": "08e2c0a20d65",
+      "category": "open",
+      "license": "ISC",
+      "description_id": "licenses.role_librosa_analysis",
+      "homepage": "https://github.com/librosa/librosa",
+      "documents": [
+        {
+          "path": "librosa-analysis/LICENSE.md",
+          "source": "https://raw.githubusercontent.com/librosa/librosa/08e2c0a20d650fe00f10aaf3a1eaa9698ac19641/LICENSE.md",
+          "bytes": 766,
+          "sha256": "79aa4a8086d51ac89f9a7322f546670cdef73e758c67f04587b7af8afafd6df8",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "vendor/librosa_analysis.py",
+          "sha256": "d03c88b8e758391cc8baab1cb30027ada026f988fd791213628f558c35ae61e9"
+        }
+      ]
+    },
+    {
+      "id": "librosa_tempo",
+      "name": "librosa tempo (adapted subset)",
+      "version": "0.10.2",
+      "category": "open",
+      "license": "ISC",
+      "description_id": "licenses.role_librosa_tempo",
+      "homepage": "https://librosa.org",
+      "documents": [
+        {
+          "path": "librosa-tempo/LICENSE.md",
+          "source": "https://raw.githubusercontent.com/librosa/librosa/0.10.2/LICENSE.md",
+          "bytes": 766,
+          "sha256": "1746ca32b53fa31941c38b63a986e4126ab998e81a2f73a566000847a588e2a3",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "vendor/librosa_tempo.py",
+          "sha256": "f4cd374bb6c3249b68522d7c4929127b0965721c32570bf62f157ce7bbdb4ee0"
+        },
+        {
+          "path": "vendor/librosa-analysis/tempo-mel.npy",
+          "sha256": "ef015de9b49e1172e2d77203af36a581f89b252a887f9bd09ba623ceb80cfad7"
+        }
+      ]
+    },
+    {
+      "id": "noto",
+      "name": "Noto Sans KR",
+      "version": "Version 2.004-H2",
+      "category": "font",
+      "license": "SIL Open Font License 1.1",
+      "description_id": "licenses.role_noto",
+      "homepage": "https://github.com/notofonts/noto-cjk",
+      "documents": [
+        {
+          "path": "fonts/OFL.txt",
+          "source": "dev/fonts/OFL.txt",
+          "bytes": 4638,
+          "sha256": "0eaf237292b728224c4a31f6d6267ac67727ca26ebd135de78a31a2eccab40dc",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "bass",
+      "name": "BASS",
+      "version": "2.4.18.3",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bass",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bass.txt",
+          "source": "bass.txt",
+          "bytes": 91429,
+          "sha256": "e2a6a97c41892f9df78c367e7901cbe2262843e80edd23882b721f50f7a9de4b",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bass.dll",
+          "sha256": "febb2cf1882d554c3a958280777da0b69f07de6e262df271de11c56e4a54afd4"
+        }
+      ]
+    },
+    {
+      "id": "bassmidi",
+      "name": "BASSMIDI",
+      "version": "2.4.16.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassmidi",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassmidi.txt",
+          "source": "bassmidi.txt",
+          "bytes": 30493,
+          "sha256": "02cf1896beda22c73bc471970ea0580bdf7e6eb731bfdb54b86d25d58b3c643e",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassmidi.dll",
+          "sha256": "e04e334ca35dce657b11eb9dacc7561b9c1365c337c1c3abac90a36336405ee6"
+        }
+      ]
+    },
+    {
+      "id": "bass_fx",
+      "name": "BASS FX",
+      "version": "2.4.12.6",
+      "category": "bassfx",
+      "license": "JOBnik! / Arthur Aminov terms + included third-party notices",
+      "description_id": "licenses.role_bass_fx",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bass_fx.txt",
+          "source": "analysis/library_upgrades/2026-10-03/official/bass_fx/bass_fx.txt",
+          "bytes": 46915,
+          "sha256": "6755a8555f0a77153ee752e0cd0ed22494fe2402094bdb4ae4eadce4ce79d5e0",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bass_fx.dll",
+          "sha256": "a6e1847eef52d882b4137af514d834c2e220daceb417c821d1e502fb7a34c84a"
+        }
+      ]
+    },
+    {
+      "id": "bassasio",
+      "name": "BASSASIO",
+      "version": "1.4.3.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassasio",
+      "homepage": "https://www.un4seen.com/bassasio.html",
+      "documents": [
+        {
+          "path": "audio/bassasio.txt",
+          "source": "bassasio.txt",
+          "bytes": 11880,
+          "sha256": "5c206ac722fe77c3c20e60f32199f710075526dd106730e082b7e8bb10607f59",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassasio.dll",
+          "sha256": "73bf79c8eccd63dea8eb3e3e9b5ffe6f9406deb9bbcccc7557ca54f5013b4b96"
+        }
+      ]
+    },
+    {
+      "id": "basswasapi",
+      "name": "BASSWASAPI",
+      "version": "2.4.4.1",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_basswasapi",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/basswasapi.txt",
+          "source": "basswasapi24/basswasapi.txt",
+          "bytes": 5744,
+          "sha256": "711e15fbb19a0032278d9ff8fc510aaa7c17761e7314ef7b742599aac8e0f745",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "basswasapi.dll",
+          "sha256": "6f0869c11431e01f759fbe1cd6080299c833c519eb8ab1feae12106907b1fbd1"
+        }
+      ]
+    },
+    {
+      "id": "bassloud",
+      "name": "BASSloud",
+      "version": "2.4.0.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassloud",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassloud.txt",
+          "source": "dev/vendor/bassloud/bassloud.txt",
+          "bytes": 4516,
+          "sha256": "0f4c50d908f7df154f4251b4dbb28e0c6a5923633bdb49dff8b8e6b2a8f3f811",
+          "encoding": "cp1252"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassloud.dll",
+          "sha256": "cc2cf3a72087d2d19ce5a370d06d59a0804922592ee3b54abe61aa9d6c618108"
+        }
+      ]
+    },
+    {
+      "id": "bassenc",
+      "name": "BASSenc",
+      "version": "2.4.17.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassenc",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassenc.txt",
+          "source": "dev/vendor/bassenc/bassenc.txt",
+          "bytes": 17360,
+          "sha256": "89ede673cedb07772eb12d026129c149bd16954fc4d9e1186a7bff712a510b64",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassenc.dll",
+          "sha256": "9d8ee8d750def93e927e62e35d02a4cc8457c509cfa561c47aed3381691f51f8"
+        }
+      ]
+    },
+    {
+      "id": "bassenc_flac",
+      "name": "BASSenc_FLAC",
+      "version": "2.4.5.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassenc_flac",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassenc_flac.txt",
+          "source": "dev/vendor/bassenc_flac/bassenc_flac.txt",
+          "bytes": 4938,
+          "sha256": "3811acad0c47c5e98a22f63bbd8304b0c5b27b9ca38ccff6089f30dd8d9ba46b",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassenc_flac.dll",
+          "sha256": "e01521c35a666cf0ca57f937bcb350b31d9d43ca7a1128be7af07eaf9e41ab5c"
+        }
+      ]
+    },
+    {
+      "id": "bassenc_ogg",
+      "name": "BASSenc_OGG",
+      "version": "2.4.3.0",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassenc_ogg",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassenc_ogg.txt",
+          "source": "dev/vendor/bassenc_ogg/bassenc_ogg.txt",
+          "bytes": 3938,
+          "sha256": "bd4f6b6d53e8309ea4483ec4a83a9ea38a937e841116aa2f1a4a93622648727e",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassenc_ogg.dll",
+          "sha256": "e4f2b587897651541beea5dab7619ebae423416a7d2e36a10b19eaad8d75fb67"
+        }
+      ]
+    },
+    {
+      "id": "bassenc_opus",
+      "name": "BASSenc_OPUS",
+      "version": "2.4.4.2",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassenc_opus",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassenc_opus.txt",
+          "source": "dev/vendor/bassenc_opus/bassenc_opus.txt",
+          "bytes": 5046,
+          "sha256": "a57912c63bdfef6406157ea70aee33a574f7d6e3edbefbd207566e2a33094daa",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassenc_opus.dll",
+          "sha256": "d22bec909884e74992195decd9715070276fcff1d33a2f95e9ec55428300cd4c"
+        }
+      ]
+    },
+    {
+      "id": "bassenc_mp3",
+      "name": "BASSenc_MP3",
+      "version": "2.4.1.6",
+      "category": "restricted",
+      "license": "Un4seen terms + included third-party notices",
+      "description_id": "licenses.role_bassenc_mp3",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "documents": [
+        {
+          "path": "audio/bassenc_mp3.txt",
+          "source": "dev/vendor/bassenc_mp3/bassenc_mp3.txt",
+          "bytes": 4287,
+          "sha256": "bebd96ea73d9641c9364c522d1fd508807a6ec6ab13088cf10e827d1b1d02ecd",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "bassenc_mp3.dll",
+          "sha256": "4e18e1896436baee04257d0714a0408b258d7862d9a524d1cc70d53dd7ccdc89"
+        }
+      ]
+    },
+    {
+      "id": "midi_mode_logos",
+      "name": "MIDI mode logo artwork",
+      "version": "original outlines / 2026-10-23",
+      "category": "artwork",
+      "license": "GM/GS/XG artwork and marks: rights reserved",
+      "description_id": "licenses.role_midi_mode_logos",
+      "homepage": "https://cdn.roland.com/assets/media/pdf/SC-8850_OM.pdf",
+      "documents": [
+        {
+          "path": "midi-mode-logos/LICENSE.txt",
+          "source": "ABMSynth original-outline source rights and attribution notice",
+          "bytes": 755,
+          "sha256": "b94226dbb0be9264b38d2b86f0029243a145afffa3e4e2623bd4ba278145ac28",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "midi-mode-logos/NOTICE.txt",
+          "source": "ABMSynth original-outline source rights and attribution notice",
+          "bytes": 1494,
+          "sha256": "b97e59ea2d677740045f4c8cf5ccb89ade178bdc92844c04e1bd3608c4b6e828",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "assets/midi-mode-logos.json",
+          "sha256": "3277ad9915de145ad74eace29ece9db494b3b5c0a6813dc9a39f1e294d262d91"
+        }
+      ]
+    },
+    {
+      "id": "libffi",
+      "name": "libffi",
+      "version": "3.4.8",
+      "license": "MIT",
+      "homepage": "https://sourceware.org/libffi/",
+      "documents": [
+        {
+          "path": "runtime/libffi/LICENSE",
+          "source": "Conda libffi 3.4.8 h42d73b9_3: info/licenses/LICENSE",
+          "bytes": 1132,
+          "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "bzip2",
+      "name": "bzip2",
+      "version": "1.0.8",
+      "license": "bzip2-1.0.6",
+      "homepage": "https://sourceware.org/bzip2/",
+      "documents": [
+        {
+          "path": "runtime/bzip2/LICENSE",
+          "source": "Conda bzip2 1.0.8 h2bbff1b_6: info/licenses/LICENSE",
+          "bytes": 1896,
+          "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "libexpat",
+      "name": "Expat",
+      "version": "2.8.4",
+      "license": "MIT",
+      "homepage": "https://libexpat.github.io/",
+      "documents": [
+        {
+          "path": "runtime/libexpat/COPYING",
+          "source": "Conda libexpat 2.8.4 hd7fb8db_0: info/licenses/COPYING",
+          "bytes": 1144,
+          "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "xz",
+      "name": "XZ Utils / liblzma",
+      "version": "5.8.2",
+      "license": "0BSD (liblzma)",
+      "homepage": "https://tukaani.org/xz/",
+      "documents": [
+        {
+          "path": "runtime/xz/COPYING",
+          "source": "Conda xz 5.8.2 h53af0af_0: info/licenses/COPYING",
+          "bytes": 3119,
+          "sha256": "616a3ad264ce29b8f1cb97e53037b139d406899ca8d1f799651e17bfa09830b8",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "runtime/xz/COPYING.0BSD",
+          "source": "https://raw.githubusercontent.com/tukaani-project/xz/v5.8.2/COPYING.0BSD",
+          "bytes": 607,
+          "sha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "openssl",
+      "name": "OpenSSL",
+      "version": "3.5.8",
+      "license": "Apache-2.0",
+      "homepage": "https://www.openssl.org/",
+      "documents": [
+        {
+          "path": "runtime/openssl/LICENSE.txt",
+          "source": "Conda openssl 3.5.8 hbb43b14_0: info/licenses/LICENSE.txt",
+          "bytes": 10175,
+          "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "libzlib",
+      "name": "zlib",
+      "version": "1.3.2",
+      "license": "Zlib",
+      "homepage": "https://zlib.net/",
+      "documents": [
+        {
+          "path": "runtime/libzlib/LICENSE",
+          "source": "Conda libzlib 1.3.2 h1c6eee0_0: info/licenses/LICENSE",
+          "bytes": 1002,
+          "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "zstd",
+      "name": "Zstandard",
+      "version": "1.5.7",
+      "license": "BSD-3-Clause",
+      "homepage": "https://facebook.github.io/zstd/",
+      "documents": [
+        {
+          "path": "runtime/zstd/LICENSE",
+          "source": "Conda zstd 1.5.7 h56299aa_0: info/licenses/LICENSE",
+          "bytes": 1549,
+          "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "libmpdec",
+      "name": "libmpdec",
+      "version": "4.0.1",
+      "license": "BSD-2-Clause",
+      "homepage": "https://www.bytereef.org/mpdecimal/",
+      "documents": [
+        {
+          "path": "runtime/libmpdec/COPYRIGHT.txt",
+          "source": "Conda libmpdec 4.0.1 h1c6eee0_0: info/licenses/COPYRIGHT.txt",
+          "bytes": 1285,
+          "sha256": "dba079e24a0286052f9f36a5e0b4f6cc95bc83ada657eb26bef8c0b6473f6512",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "ucrt",
+      "name": "Microsoft Universal C Runtime",
+      "version": "10.0.22621.0",
+      "license": "Microsoft Windows SDK terms",
+      "homepage": "https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment",
+      "documents": [
+        {
+          "path": "runtime/ucrt/LICENSE.txt",
+          "source": "Conda ucrt 10.0.22621.0 haa95532_0: info/licenses/LICENSE.txt",
+          "bytes": 29155,
+          "sha256": "2169a9a139c5c16e5566f679fe06b555254f3e2e1f0054f9eaa3059202c76cda",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "restricted",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "vc14_runtime",
+      "name": "Microsoft Visual C++ Runtime",
+      "version": "14.x (Python / NumPy / Qt vendor distributions)",
+      "license": "Microsoft Visual C++ Runtime terms",
+      "homepage": "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution",
+      "documents": [
+        {
+          "path": "runtime/vc14_runtime/LICENSE.RTF",
+          "source": "Conda vc14_runtime 14.44.35208 h4927774_12: info/licenses/LICENSE.RTF",
+          "bytes": 9235,
+          "sha256": "8099dc3cf9502c335da829e5c755948a12e3e6de490eb492a99deb673d883d8b",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "runtime/vc14_runtime/LICENSE.TXT",
+          "source": "Conda vc14_runtime 14.44.35208 h4927774_12: info/licenses/LICENSE.TXT",
+          "bytes": 7590,
+          "sha256": "cf89b37107c22cf8ce21043da1da143087b86ce7fd4556f91c25bc429533807e",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "restricted",
+      "description_id": "licenses.role_python",
+      "artifacts": []
+    },
+    {
+      "id": "mesa_llvmpipe",
+      "name": "Mesa llvmpipe",
+      "version": "Qt Windows software renderer",
+      "license": "MIT / BSL-1.0",
+      "homepage": "https://doc.qt.io/qt-6.11/qt-attribution-llvmpipe.html",
+      "documents": [
+        {
+          "path": "runtime/mesa/llvmpipe.txt",
+          "source": "https://doc.qt.io/qt-6.11/qt-attribution-llvmpipe.html (verbatim preformatted notices)",
+          "bytes": 3591,
+          "sha256": "1510b61724cd6ef2cfcfa9c41dcc591a930fe24f94479e25ed7066ac019b4a3a",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_mesa_llvmpipe",
+      "artifacts": []
+    },
+    {
+      "id": "mesa_llvm",
+      "name": "LLVM notices (Qt distribution)",
+      "version": "Qt Windows software renderer",
+      "license": "NCSA / BSD notices",
+      "homepage": "https://doc.qt.io/qt-6.11/qt-attribution-llvm.html",
+      "documents": [
+        {
+          "path": "runtime/mesa/llvm.txt",
+          "source": "https://doc.qt.io/qt-6.11/qt-attribution-llvm.html (verbatim preformatted notices)",
+          "bytes": 5841,
+          "sha256": "e01d8f12fc3f039ed99b7fd20fec3c0472a9dfc35e7ecafa918931ca9cc9500d",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_llvm",
+      "artifacts": []
+    },
+    {
+      "id": "pyinstaller",
+      "name": "PyInstaller bootloader",
+      "version": "6.22.3",
+      "license": "GPL-2.0-or-later WITH Bootloader-exception",
+      "homepage": "https://pyinstaller.org/en/stable/license.html",
+      "documents": [
+        {
+          "path": "runtime/pyinstaller/COPYING.txt",
+          "source": "PyInstaller 6.22.3 official wheel licenses/COPYING.txt",
+          "bytes": 32604,
+          "sha256": "0598064c7d2718e38d7914a7d08343b2fa008e3bea9ebba2aa7a6ffa5900dd64",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "category": "open",
+      "description_id": "licenses.role_pyinstaller",
+      "artifacts": []
+    },
+    {
+      "id": "soundtouch",
+      "name": "SoundTouch (BASS FX attribution)",
+      "version": "2.0.0",
+      "license": "LGPL-2.1-or-later",
+      "homepage": "https://www.surina.net/soundtouch/license.html",
+      "documents": [
+        {
+          "path": "runtime/soundtouch/COPYING.TXT",
+          "source": "https://www.surina.net/soundtouch/soundtouch-2.0.0.tar.gz: soundtouch-2.0.0/COPYING.TXT",
+          "bytes": 24388,
+          "sha256": "9c6a15d7433078e4c0d3cb9820f172bbf0bf829e7648d719dc85c1429815519b",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "runtime/soundtouch/README.html",
+          "source": "https://www.surina.net/soundtouch/soundtouch-2.0.0.tar.gz: soundtouch-2.0.0/README.html",
+          "bytes": 40644,
+          "sha256": "63e506e21d4a972707b0c2839228cf28a1d3f288fbc9197e9f0c2aae9a855d34",
+          "encoding": "cp1252"
+        }
+      ],
+      "category": "lgpl",
+      "description_id": "licenses.role_soundtouch",
+      "artifacts": []
+    },
+    {
+      "id": "fluidr3",
+      "name": "FluidR3",
+      "version": "3.1",
+      "license": "MIT",
+      "homepage": "https://tracker.debian.org/pkg/fluid-soundfont",
+      "category": "mit",
+      "description_id": "licenses.role_fluidr3",
+      "documents": [
+        {
+          "path": "fluidr3/COPYING",
+          "source": "https://deb.debian.org/debian/pool/main/f/fluid-soundfont/fluid-soundfont_3.1.orig.tar.gz#fluid-soundfont-3.1/COPYING",
+          "bytes": 1086,
+          "sha256": "8ef830b65c97a976b86e34bb5fde08d99dfb1db13c4149b5b20bc837ac6c4568",
+          "encoding": "utf-8-sig"
+        },
+        {
+          "path": "fluidr3/README",
+          "source": "https://deb.debian.org/debian/pool/main/f/fluid-soundfont/fluid-soundfont_3.1.orig.tar.gz#fluid-soundfont-3.1/README",
+          "bytes": 1042,
+          "sha256": "2f92d462684629f207e43815115b79d7f1ce130d30ca8792b7d82b398a8306f9",
+          "encoding": "utf-8-sig"
+        }
+      ],
+      "artifacts": [
+        {
+          "path": "assets/soundfonts/FluidR3.sf2",
+          "bytes": 148398306,
+          "sha256": "74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0"
+        }
+      ]
+    }
+  ]
+}

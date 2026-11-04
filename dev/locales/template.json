@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "locale": "<BCP-47 tag>",
+    "language": "<translator-facing language name>",
+    "catalog_version": 1
+  },
+  "common": {},
+  "main": {},
+  "state": {},
+  "preferences": {
+    "synthesis_mode": "",
+    "synthesis_mode_detail": "",
+    "synthesis_high_performance": "",
+    "synthesis_high_performance_detail": "",
+    "synthesis_compatible": "",
+    "synthesis_compatible_detail": ""
+  },
+  "appearance": {},
+  "action": {},
+  "tab": {},
+  "effect": {},
+  "delay": {},
+  "group": {},
+  "runtime": {
+    "multicore_unavailable": "",
+    "multicore_retained": "",
+    "multicore_prepare_failed": "",
+    "multicore_unverified_library": ""
+  },
+  "error": {},
+  "tooltip": {}
+}

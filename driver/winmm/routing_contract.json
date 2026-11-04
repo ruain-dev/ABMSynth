@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "policy": "winmm-default-with-sdk-caveat-v2",
+  "sha256": {
+    "x64": "881edd6af03b5567932b300690982001cda377cfa00f50aa1b9fdd31e85c474a",
+    "x86": "260ea4c5ade37d01a9fa71155de216035ce00f4b17fe589c2d7e059734ed5a88"
+  },
+  "baseline_sha256": {
+    "x64": "ec62649da0a7a2c6ca833c03dcf9b5987761bdbd3222f33b5186240907d4fcde",
+    "x86": "79b4353038a7a395d2428ed3930b383939f3a2fd6fb39e542c9c7f1fe7f9e9d8"
+  }
+}

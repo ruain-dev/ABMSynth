@@ -1,0 +1,8 @@
+name: abmsynth
+channels:
+  - defaults
+dependencies:
+  - python=3.14.7
+  - pip=26.2.1
+  - pip:
+      - -r requirements-abmsynth.txt

@@ -1,0 +1,173 @@
+BASSenc_FLAC 2.4
+Copyright (c) 2017-2025 Un4seen Developments Ltd. All rights reserved.
+
+
+BASSenc_FLAC is an extension to the BASSenc add-on that allows BASS channels
+to be FLAC encoded.
+
+
+Requirements
+============
+BASS 2.4 and BASSenc 2.4.14 or above are required.
+
+
+Using BASSenc_FLAC
+==================
+The usage information in the BASS.TXT file (from the BASS package) is also
+applicable to BASSenc_FLAC and other add-ons.
+
+
+Included files
+==============
+Win32 version
+-------------
+BASSENC_FLAC.TXT    This file
+BASSENC_FLAC.DLL    32-bit BASSenc_FLAC module
+BASSENC_FLAC.CHM    BASSenc_FLAC documentation
+X64\
+  BASSENC_FLAC.DLL    64-bit BASSenc_FLAC module
+C\
+  BASSENC_FLAC.H      BASSenc_FLAC C/C++ header file
+  BASSENC_FLAC.LIB    32-bit BASSenc_FLAC import library
+  X64\
+    BASSENC_FLAC.LIB    64-bit BASSenc_FLAC import library
+DELPHI\
+  BASSENC_FLAC.PAS    BASSenc_FLAC Delphi/Pascal unit
+VB\
+  BASSENC_FLAC.BAS    BASSenc_FLAC Visual Basic module
+
+macOS version
+-------------
+BASSENC_FLAC.TXT    This file
+LIBBASSENC_FLAC.DYLIB  BASSenc_FLAC module
+BASSENC_FLAC.CHM    BASSenc_FLAC documentation
+C\
+  BASSENC_FLAC.H      BASSenc_FLAC C/C++/Objective-C header file
+DELPHI\
+  BASSENC_FLAC.PAS    BASSenc_FLAC Delphi/Pascal unit
+
+Linux version
+-------------
+BASSENC_FLAC.TXT    This file
+BASSENC_FLAC.CHM    BASSenc_FLAC documentation
+LIBS\               BASSenc_FLAC modules
+  ...
+C\
+  BASSENC_FLAC.H      BASSenc_FLAC C/C++ header file
+DELPHI\
+  BASSENC_FLAC.PAS    BASSenc_FLAC Delphi/Pascal unit
+
+Android version
+---------------
+BASSENC_FLAC.TXT    This file
+BASSENC_FLAC.CHM    BASSenc_FLAC documentation
+LIBS\               BASSenc_FLAC modules
+  ...
+C\
+  BASSENC_FLAC.H      BASSenc_FLAC C/C++ header file
+JAVA\COM\UN4SEEN\BASS\
+  BASSENC_FLAC.JAVA   BASSenc_FLAC Java class
+
+iOS version
+-----------
+BASSENC_FLAC.TXT    This file
+BASSENC_FLAC.XCFRAMEWORK  BASSenc_FLAC framework
+BASSENC_FLAC.CHM    BASSenc_FLAC documentation
+BASSENC_FLAC.H      BASSenc_FLAC C/C++/Objective-C header file
+
+
+Latest Version
+==============
+The latest versions of BASSenc_FLAC & BASS can be found at the BASS website:
+
+	www.un4seen.com
+
+
+Licence
+=======
+BASSenc_FLAC is free to use with BASS.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, BASSENC_FLAC IS PROVIDED
+"AS IS", WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY
+AND/OR FITNESS FOR A PARTICULAR PURPOSE. THE AUTHORS SHALL NOT BE HELD
+LIABLE FOR ANY DAMAGE THAT MAY RESULT FROM THE USE OF BASSENC_FLAC. YOU USE
+BASSENC_FLAC ENTIRELY AT YOUR OWN RISK.
+
+Usage of BASSenc_FLAC indicates that you agree to the above conditions.
+
+All trademarks and other registered names contained in the BASSenc_FLAC
+package are the property of their respective owners.
+
+
+Credits
+=======
+FLAC encoding is based on libFLAC, Copyright (C) 2000-2009 Josh Coalson,
+Copyright (C) 2011-2025 Xiph.Org Foundation
+
+
+History
+=======
+These are the major (and not so major) changes in each release, along with the
+functions/options that are introduced/affected by them. There are other little
+tweaks and fixes made along the way too.
+
+2.4.5 - 20/6/2025
+-----------------
+* Support for multithreaded encoding (--threads option)
+	BASS_Encode_FLAC_Start/File
+* Updated to libFLAC 1.5.0
+
+2.4.4.1 - 12/10/2023
+--------------------
+* Updated to libFLAC 1.4.3
+
+2.4.4 - 19/10/2022
+------------------
+* Support for 32-bit encoding
+	BASS_ENCODE_FP_32BIT (BASS_Encode_FLAC_Start/File flag)
+* Support for minimum bitrate limiting (--limit-min-bitrate option)
+	BASS_Encode_FLAC_Start/File
+	CAST and SERVER examples updated in BASSenc package
+* Updated to libFLAC 1.4.1
+
+2.4.3.1 - 24/2/2022
+-------------------
+* Updated to libFLAC 1.3.4
+
+2.4.3 - 3/12/2020
+-----------------
+* Ogg FLAC bitstream chaining for option/metadata changes
+	BASS_Encode_FLAC_NewStream
+* Updated to libFLAC 1.3.3
+
+2.4.2 - 6/11/2018
+-----------------
+* Support for seektables (-S/--seekpoint/--no-seektable options)
+	BASS_Encode_FLAC_Start/File
+* Support for picture embedding (--picture option)
+	BASS_Encode_FLAC_Start/File
+* SSE optimizations enabled for greater performance (non-SSE CPUs still supported)
+
+2.4.1.1 - 21/8/2018
+-------------------
+* Fix for encoding to callback function bug
+	BASS_Encode_FLAC_Start
+
+2.4.1 - 16/7/2018
+-----------------
+* Support for writing seekable FLAC files via a callback function
+	BASS_Encode_FLAC_Start
+	NOTE: ENCODEPROC need to be changed to ENCODEPROCEX in existing code
+* BASS_ENCODE_FLAC_NOCOUNT flag removed
+
+2.4 - 6/11/2017
+---------------
+* First release
+
+
+Bug reports, Suggestions, Comments, Enquiries, etc
+==================================================
+If you have any of the aforementioned please visit the BASS forum at the
+website.
+

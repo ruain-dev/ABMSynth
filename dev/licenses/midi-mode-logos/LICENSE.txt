@@ -1,0 +1,14 @@
+MIDI mode logo artwork - source rights
+
+GM / General MIDI marks belong to their respective standards organisations
+and rightsholders. GS belongs to Roland Corporation. XG belongs to Yamaha
+Corporation. Source artwork and marks remain the property of their owners.
+All rights reserved by the respective rightsholders.
+
+The included data contains only the original logo outlines used to identify
+the currently processed MIDI mode. It does not include manual prose or pages.
+Extracting outlines does not create a new open-source licence for the marks.
+This source record does not grant trademark rights or claim certification,
+sponsorship,endorsement or a separate rightsholder permission.
+
+See NOTICE.txt for exact sources,hashes,pages and transformations.

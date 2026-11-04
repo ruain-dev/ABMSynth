@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.ico binary
+*.sf2 binary
+*.npy binary
+/LICENSE -text
+/ADDITIONAL_PERMISSIONS.md -text
+/dev/licenses/** -text
+/dev/fonts/*.txt -text
+/dev/vendor/** -text

@@ -1,0 +1,26 @@
+MIDI mode identification artwork - original vector outlines
+
+Sources:
+1. Roland Corporation,SC-8850 Owner's Manual,printed page7 (zero-based page6).
+   https://cdn.roland.com/assets/media/pdf/SC-8850_OM.pdf
+   SHA-256: ec1b2c9a76bee49969fdebf2ebd7fe6f217eaad250468105c5bd5cd41dbe667d
+   gm1,gm2 and gs logo line/Bezier outlines.
+2. Yamaha Corporation,CVP-109/CVP-107/CVP-105/CVP-700 manual,cover page.
+   https://usa.yamaha.com/files/download/other_assets/5/318275/CVP109S1.pdf
+   SHA-256: eaa6fc6b56ff57eeb28847b9b53876bc7640c0b9061134377603cac0399e7add
+   xg logo line/Bezier outlines.
+
+ABMSynth transformation:
+Only the four logo outlines are included in assets/midi-mode-logos.json.
+Source drawing indices and original origins/bounds are retained in the data.
+Original lines and cubic Beziers are preserved;this is not pixel tracing.
+Paths are translated to local coordinates. Transparent counters preserve
+original white cutouts through winding direction. Theme colours replace ink
+colour. One uniform scale fits each original aspect ratio without stretching.
+The manuals and the extraction tool are not runtime product resources.
+
+These outlines replace the retired16x16 midi-db LCD approximations.
+The former CC BY-SA notice does not apply to these different source outlines.
+All artwork and marks remain with their respective rightsholders.
+This source record does not grant trademark rights or claim a separate
+permission,official certification,sponsorship or endorsement of ABMSynth.

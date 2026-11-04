@@ -1,0 +1,6 @@
+; build.ps1 owns the variant name: ABMSynthMidi.drv or ABMSynthMapper.drv.
+; Both share this public DriverProc/modMessage ABI.
+EXPORTS
+    DriverProc
+    modMessage
+    midMessage

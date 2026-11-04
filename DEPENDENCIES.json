@@ -1,0 +1,187 @@
+{
+  "python": "3.14.7",
+  "python_packages": {
+    "PySide6": "6.11.2",
+    "numpy": "2.5.3",
+    "fonttools": "4.65.0",
+    "pychord": "1.4.0"
+  },
+  "pyinstaller": "6.22.3",
+  "runtime_files": [
+    {
+      "target": "dev/abmsynth_asio_observer.dll",
+      "source": "_internal/abmsynth_asio_observer.dll",
+      "owner": "ABMSynth",
+      "bytes": 125952,
+      "sha256": "f1b54babbbc239bbb3798aa45209ddf25a94da5e6e24413de6c1d0f4dbc67ee0"
+    },
+    {
+      "target": "dev/abmsynth_dsp.dll",
+      "source": "_internal/abmsynth_dsp.dll",
+      "owner": "ABMSynth",
+      "bytes": 850944,
+      "sha256": "c575cc37eb87cd6bcf4ff4ece5e17e0c99de432854fcca37a9ed5fbe4e71dc82"
+    },
+    {
+      "target": "dev/abmsynth_tempo_capture.dll",
+      "source": "_internal/abmsynth_tempo_capture.dll",
+      "owner": "ABMSynth",
+      "bytes": 115712,
+      "sha256": "27b05ae6d2941d398146707e55c9ef46839fce7687f1907cc43d2fa109c535c3"
+    },
+    {
+      "target": "dev/bass.dll",
+      "source": "_internal/bass.dll",
+      "owner": "external",
+      "bytes": 166872,
+      "sha256": "febb2cf1882d554c3a958280777da0b69f07de6e262df271de11c56e4a54afd4"
+    },
+    {
+      "target": "dev/bass_fx.dll",
+      "source": "_internal/bass_fx.dll",
+      "owner": "external",
+      "bytes": 88064,
+      "sha256": "a6e1847eef52d882b4137af514d834c2e220daceb417c821d1e502fb7a34c84a"
+    },
+    {
+      "target": "dev/bassasio.dll",
+      "source": "_internal/bassasio.dll",
+      "owner": "external",
+      "bytes": 27944,
+      "sha256": "73bf79c8eccd63dea8eb3e3e9b5ffe6f9406deb9bbcccc7557ca54f5013b4b96"
+    },
+    {
+      "target": "dev/bassenc.dll",
+      "source": "_internal/bassenc.dll",
+      "owner": "external",
+      "bytes": 38064,
+      "sha256": "9d8ee8d750def93e927e62e35d02a4cc8457c509cfa561c47aed3381691f51f8"
+    },
+    {
+      "target": "dev/bassenc_flac.dll",
+      "source": "_internal/bassenc_flac.dll",
+      "owner": "external",
+      "bytes": 92656,
+      "sha256": "e01521c35a666cf0ca57f937bcb350b31d9d43ca7a1128be7af07eaf9e41ab5c"
+    },
+    {
+      "target": "dev/bassenc_mp3.dll",
+      "source": "_internal/bassenc_mp3.dll",
+      "owner": "external",
+      "bytes": 92216,
+      "sha256": "4e18e1896436baee04257d0714a0408b258d7862d9a524d1cc70d53dd7ccdc89"
+    },
+    {
+      "target": "dev/bassenc_ogg.dll",
+      "source": "_internal/bassenc_ogg.dll",
+      "owner": "external",
+      "bytes": 183664,
+      "sha256": "e4f2b587897651541beea5dab7619ebae423416a7d2e36a10b19eaad8d75fb67"
+    },
+    {
+      "target": "dev/bassenc_opus.dll",
+      "source": "_internal/bassenc_opus.dll",
+      "owner": "external",
+      "bytes": 169632,
+      "sha256": "d22bec909884e74992195decd9715070276fcff1d33a2f95e9ec55428300cd4c"
+    },
+    {
+      "target": "dev/bassloud.dll",
+      "source": "_internal/bassloud.dll",
+      "owner": "external",
+      "bytes": 20592,
+      "sha256": "cc2cf3a72087d2d19ce5a370d06d59a0804922592ee3b54abe61aa9d6c618108"
+    },
+    {
+      "target": "dev/bassmidi.dll",
+      "source": "_internal/bassmidi.dll",
+      "owner": "external",
+      "bytes": 83264,
+      "sha256": "e04e334ca35dce657b11eb9dacc7561b9c1365c337c1c3abac90a36336405ee6"
+    },
+    {
+      "target": "dev/basswasapi.dll",
+      "source": "_internal/basswasapi.dll",
+      "owner": "external",
+      "bytes": 24264,
+      "sha256": "6f0869c11431e01f759fbe1cd6080299c833c519eb8ab1feae12106907b1fbd1"
+    },
+    {
+      "target": "dev/NotoSansKR-VariableFont_wght.ttf",
+      "source": "_internal/NotoSansKR-VariableFont_wght.ttf",
+      "owner": "external",
+      "bytes": 10400436,
+      "sha256": "84f383e0a0fda713f329013e397fec854f53bea59a448451d7d72f2f707309a2"
+    },
+    {
+      "target": "dev/assets/midi-mode-logos.json",
+      "source": "_internal/assets/midi-mode-logos.json",
+      "owner": "external",
+      "bytes": 20987,
+      "sha256": "3277ad9915de145ad74eace29ece9db494b3b5c0a6813dc9a39f1e294d262d91"
+    },
+    {
+      "target": "dev/fonts/NotoSansKR-wght400.ttf",
+      "source": "_internal/fonts/NotoSansKR-wght400.ttf",
+      "owner": "external",
+      "bytes": 6185548,
+      "sha256": "3d56e67b961718c2672426fe43cf7781cbdbba32980d7ccf1173711afa9e7588"
+    },
+    {
+      "target": "dev/fonts/NotoSansKR-wght500.ttf",
+      "source": "_internal/fonts/NotoSansKR-wght500.ttf",
+      "owner": "external",
+      "bytes": 6183100,
+      "sha256": "7a8f0143a6c5408caa7e2d910202b5ec680301f198ac6fd6c2e549fd5aaae98f"
+    },
+    {
+      "target": "dev/fonts/NotoSansKR-wght600.ttf",
+      "source": "_internal/fonts/NotoSansKR-wght600.ttf",
+      "owner": "external",
+      "bytes": 6181744,
+      "sha256": "a360332c70dd41390572af396bdff42f334628145bf127505e74ad30f355a78a"
+    },
+    {
+      "target": "dev/fonts/NotoSansKR-wght700.ttf",
+      "source": "_internal/fonts/NotoSansKR-wght700.ttf",
+      "owner": "external",
+      "bytes": 6183360,
+      "sha256": "0336e7a3a3fa648e057dea4eb1f702a4c411216271f77be0cb0d7888376c5759"
+    },
+    {
+      "target": "dev/assets/soundfonts/FluidR3.sf2",
+      "source": "_internal/assets/soundfonts/FluidR3.sf2",
+      "owner": "external",
+      "bytes": 148398306,
+      "sha256": "74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0",
+      "download": "https://deb.debian.org/debian/pool/main/f/fluid-soundfont/fluid-soundfont_3.1.orig.tar.gz",
+      "archive_sha256": "2621acaa1c78e4abdb24bdd163230cc577e61276936d6aa6e3180582142f0343",
+      "archive_member": "fluid-soundfont-3.1/FluidR3_GM.sf2"
+    }
+  ],
+  "sdk_headers": [
+    {
+      "target": "bass.h",
+      "sdk_member": "c/bass.h",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "bytes": 47164,
+      "sha256": "deb66f150ceada5370a13c9b96879105b9237f1bc5bf5f2f01b77eaecb524b78"
+    },
+    {
+      "target": "bassmidi.h",
+      "sdk_member": "c/bassmidi.h",
+      "homepage": "https://www.un4seen.com/bass.html",
+      "bytes": 17822,
+      "sha256": "6fede34e385adcac14f117566943fbc76c02b87433c6f88b1d97117311475eb9"
+    }
+  ],
+  "source_files": [
+    {
+      "target": "dev/vendor/bassenc_mp3-source.zip",
+      "source": "bassenc_mp3-source.zip",
+      "bytes": 281463,
+      "sha256": "47c87c3817c3fce8e5fdd603e2e121603d9ccbec10d29aee60afdabc67f11115"
+    }
+  ],
+  "source_policy": "Core source and required original assets;external runtime/SDK prepared separately"
+}

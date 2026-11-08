@@ -2,13 +2,10 @@ Metadata-Version: 2.4
 Name: PySide6
 Version: 6.11.2
 Summary: Python bindings for the Qt cross-platform application and UI framework
-Author-email: Qt for Python Team <pyside@qt-project.org>
+Home-page: https://pyside.org
+Author: Qt for Python Team
+Author-email: pyside@qt-project.org
 License: LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
-Project-URL: Homepage, https://pyside.org
-Project-URL: Documentation, https://doc.qt.io/qtforpython
-Project-URL: Repository, https://code.qt.io/cgit/pyside/pyside-setup.git/
-Project-URL: Changelog, https://code.qt.io/cgit/pyside/pyside-setup.git/tree/doc/changelogs
-Project-URL: Tracker, https://qt-project.atlassian.net/browse/PYSIDE
 Keywords: Qt
 Classifier: Development Status :: 5 - Production/Stable
 Classifier: Environment :: Console
@@ -35,14 +32,21 @@ Classifier: Topic :: Software Development :: Code Generators
 Classifier: Topic :: Software Development :: Libraries :: Application Frameworks
 Classifier: Topic :: Software Development :: User Interfaces
 Classifier: Topic :: Software Development :: Widget Sets
-Requires-Python: <3.15,>=3.10
+Requires-Python: >=3.10, <3.15
 Description-Content-Type: text/markdown
-License-File: LicenseRef-Qt-Commercial.txt
 Requires-Dist: shiboken6==6.11.2
-Requires-Dist: PySide6_Essentials==6.11.2
-Requires-Dist: PySide6_Addons==6.11.2
 Requires-Dist: tomli>=2.0.1; python_version < "3.11"
-Dynamic: license-file
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 # PySide6
 

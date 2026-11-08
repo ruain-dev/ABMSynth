@@ -19,8 +19,8 @@
       "target": "dev/abmsynth_dsp.dll",
       "source": "_internal/abmsynth_dsp.dll",
       "owner": "ABMSynth",
-      "bytes": 850944,
-      "sha256": "c575cc37eb87cd6bcf4ff4ece5e17e0c99de432854fcca37a9ed5fbe4e71dc82"
+      "bytes": 851456,
+      "sha256": "9f38f692b180270773fc7c365a758b1d36bc5ad111a7e90ca483df42e2d73632"
     },
     {
       "target": "dev/abmsynth_tempo_capture.dll",
@@ -183,5 +183,83 @@
       "sha256": "47c87c3817c3fce8e5fdd603e2e121603d9ccbec10d29aee60afdabc67f11115"
     }
   ],
-  "source_policy": "Core source and required original assets;external runtime/SDK prepared separately"
+  "source_policy": "Core source and required original assets;external runtime/SDK prepared separately",
+  "qt_binding_build": {
+    "version": "6.11.2",
+    "python_abi": "cp314",
+    "limited_api": false,
+    "source": "third_party/sources/pyside-setup-everywhere-src-6.11.2.tar.xz",
+    "recipe": "third_party/sources/qt-build-recipes/build-pyside-cp314.ps1",
+    "modules": [
+      "Core",
+      "Gui",
+      "Widgets",
+      "Network",
+      "Multimedia",
+      "Svg",
+      "Test",
+      "OpenGL"
+    ],
+    "wheels": [
+      {
+        "file": "third_party/wheels/qt-cp314/pyside6-6.11.2-6.11.2-cp314-cp314-win_amd64.whl",
+        "bytes": 63170340,
+        "sha256": "7369b4d1e2e02b065482e8fc85f310e92894cdee7fd43e59f10e6a9144e742c4"
+      },
+      {
+        "file": "third_party/wheels/qt-cp314/shiboken6-6.11.2-6.11.2-cp314-cp314-win_amd64.whl",
+        "bytes": 362968,
+        "sha256": "fcfef99d01b55863d46d63018750f481fe22722f7e13d16633de0400969038fa"
+      }
+    ],
+    "package_files": {
+      "PySide6": {
+        "avcodec-61.dll": "3823070d38dc7dce277ccec165f99bbc02ad96bacc9afde1a00818e9d8350eb6",
+        "avformat-61.dll": "87ea82ab0620ea817c6bab0a4ff0f91a16080842f9b3208c49238458b99754d1",
+        "avutil-59.dll": "9d744dc6d44189a690d30b491b53aec1a9822a59aeb7b6f79253d219c0f0862d",
+        "msvcp140.dll": "4c667b706893593812cd111b369ba6a77f54d1f1b1ae87cf3bf37692663cfba2",
+        "msvcp140_1.dll": "d419d24b0a76366f5c9d908b0e45fe70e9e9154bb8ad5f3de42070f2337f857b",
+        "msvcp140_2.dll": "89917964abb6ca16a260cab258e180c3abc239b5af00eed659d0edf0efdd339c",
+        "msvcp140_codecvt_ids.dll": "8294cb4ab550197b13994113b743f4cd40242ab4e7c0712723f973ca0324bc56",
+        "opengl32sw.dll": "34b444c016289b560662ff896deceb7f4b2c0723aed3d319ae167c9186ce42b3",
+        "pyside6.cp314-win_amd64.dll": "6ff36f081a4578269179f9e23f3032069998e2ba943d1f916be03b4db3fbd83b",
+        "Qt6Concurrent.dll": "06a2719d8ee9b95d04c6828874dabef3ba3a272b71ae41ea878a5e9a80528045",
+        "Qt6Core.dll": "d6a3c37c5263c5d418fc0e80b722bc9fca7c0859e6f635f9624a2fde00bdc653",
+        "Qt6DBus.dll": "f878d4c2f4f463c337501dc288dcb2d92a7e6cb7f698327de9700199ac317e25",
+        "Qt6Gui.dll": "ae29b005f51b6850bf57fa06fced0dc8c7039fd6fafc3bfbcfe76e38adc7abf1",
+        "Qt6Multimedia.dll": "8974c64e7056179f81c9ce6d918b1956fe39e2dcf027b22e15ec0ab35ae883ec",
+        "Qt6MultimediaQuick.dll": "4e46b106b6100146c8184b08aa3fad1496a046ba5cd3d13ee5b455f83a6e8326",
+        "Qt6MultimediaWidgets.dll": "b7ee9d76383bb3081c95d3d8fabdd5a451ecbccee00f05e1e50568a965d3253d",
+        "Qt6Network.dll": "dd3512d1c5ed062d30c98426cd0a850f13e0cf31437afb5b0b474132b9c52922",
+        "Qt6OpenGL.dll": "d51088f16db8c96dba7ef3c1474e611adb3ebdb211fea35b8e755d2a7407f7ad",
+        "Qt6OpenGLWidgets.dll": "860cd7e95bb1c6acea2b7a15f863e322a26bcc7e100acf5aa737c891adb31f75",
+        "Qt6PrintSupport.dll": "fccd235e7ceabb9ff7bb8c185b238bcb5cb553b2ef3894308adbab0fb4862b2f",
+        "Qt6Quick3DSpatialAudio.dll": "4445409e6a12fc6117a248642bda4b54efeb1cf66841f69500b0ceb1ca2a6403",
+        "Qt6SpatialAudio.dll": "fd9bf619b29ad8a0319593a08b383d3c04cc352bc778f756b5916eb8e715a349",
+        "Qt6Sql.dll": "85417b944a317fcb1bde28595ce095e2c9c3ce8439e9d8d70f3f74f8a767b7f1",
+        "Qt6Svg.dll": "1eac8f7415b311a88cb3cb4e25c3098d0e059c24c831fbbb13f43a80f0df06b7",
+        "Qt6SvgWidgets.dll": "f924f8e2c443f5d56028b7621d295ab5667ccd742bbd9b1eb6e5de33193e5dbd",
+        "Qt6Test.dll": "db459676d4b4a869fea1eedb5e9e28895a3adaa079d5dd0d7ff38c400edf1ad0",
+        "Qt6Widgets.dll": "ff0df9e2e6827e035f0731a4cedfc6333f4602bca00775e56346f27032406b74",
+        "Qt6Xml.dll": "07afbceeb1880d2e287256ca5af5e3eca70243b86be3e7e11a66d6df74a9e30c",
+        "QtCore.cp314-win_amd64.pyd": "3de42fe8c6f9c4103105e392ec6310a01574c7ab74258b59bd4d831e7b06e095",
+        "QtGui.cp314-win_amd64.pyd": "8647e37c240c4af92c820556e834a88b3a146f13e5238d9079f25c8f697b1afb",
+        "QtMultimedia.cp314-win_amd64.pyd": "fcf9f2ac6ab895e8472a46d72426ad82077273db2557ef856a3bb25b7d3e6c4f",
+        "QtNetwork.cp314-win_amd64.pyd": "d6753c4475c06dba5deabcb605a296e6a1b0be1cb0857fec532e387117fcd028",
+        "QtOpenGL.cp314-win_amd64.pyd": "1b4ff4c4049ee35880ffb5679fd7dabb67a7bf721ab3d1e323208a6f8d1fc78e",
+        "QtSvg.cp314-win_amd64.pyd": "06364ca131ba1bc5bfc6815a100c9b02d736c88048b493900f3b9087cf607a94",
+        "QtTest.cp314-win_amd64.pyd": "6cb24dba6be662156c985403c7f9648b073bb4e794095b70e6a35d25479ccd78",
+        "QtWidgets.cp314-win_amd64.pyd": "7b20d8db6b7be4f166590b7fea9039c5c7e155f3e6c551b901f77a41a6e6b305",
+        "swresample-5.dll": "2f709b4d0ca771b22f2fa61ce26355c85f49a61203de041e30acb499cc2ad11a",
+        "swscale-8.dll": "91fec4aa86bcac65778f8974ceea58fa1bf8696ad693fc4b478a7e2d43ade6bb",
+        "vcruntime140.dll": "f893ae75a1a24eea174d982f94bc80ce2448201eaa919a73c0653a5657685de4",
+        "vcruntime140_1.dll": "48aa2783793ea18ab3c2c71d420d4fff9814e662a1ff810053c6e5250061a716"
+      },
+      "shiboken6": {
+        "Shiboken.cp314-win_amd64.pyd": "82e10b6930edc6ca52a936499f5c06004d6043c6cb985bcc781f3cb1b0e2aa5e",
+        "shiboken6.cp314-win_amd64.dll": "f157a96479f4984ada2b69e1ac8c68717375ed3754e555b83f5a7a876c6abe41"
+      }
+    },
+    "runtime_assembly": "third_party/sources/qt-build-recipes/assemble_qt_runtime.py"
+  }
 }

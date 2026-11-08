@@ -106,7 +106,7 @@ from native_widgets import (
     SOUNDFONT_DISCOVERY_LIMIT, SOUNDFONT_PICKER_SENTINEL, STATUS_LOG_FONT_PX,
     TOOLTIP_WRAP_WIDTH_PX, UI_BOLD_WEIGHT, UI_REGULAR_WEIGHT,
     AnimatedComboBox, DeviceComboBox, ElasticLabel, ElasticPanel,
-    InstrumentTableSpec, NativeActionButton, NativeSettingsButton, NativeAudioVisualizer, NativeMessageBox, NativeMenu,
+      InstrumentTableSpec, NativeActionButton, NativeSettingsButton, NativeInfoButton, NativeAudioVisualizer, NativeMessageBox, NativeMenu,
     NativeCard, NativeChannelStrip, NativeChannelCommandPresentation, NativeSnapshotCommandPresentation, NativeControlRow, NativeDisclosure, NativeEQResponse, NativeHoverReconciler, NativeKnob, NativeKnobField, NativeLoadBar, NativeMeter, NativeMidiActivityBar, NativeMonitorTransitionFrame, NativeNumberBox, NativePointerFocusDismissal, NativeRotatedLabel, NativeWindowSizeMotion,
     NativeSegmentedChoice, NativeSlider, NativeToggleSwitch, NativeWindowInteractionFilter, EditableNumberLabel, OutlineCheckBox, SoundFontComboBox,
     SoundFontDiscoverySignals,
@@ -677,6 +677,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             trace.record("engine_status", stream=int(ae.runtime.stream_handle),
                          active_voices=status.active_voices, load_percent=status.load_percent)
             trace.record("tempo_observation", **self.audio_telemetry.tempo_diagnostic())
+            trace.record("chord_observation", **self.audio_telemetry.chord_diagnostic())
             levels = ae.runtime.output_meter.drain_diagnostic_levels()
             if levels is not None:
                 trace.record("audio_window", **levels)
@@ -997,6 +998,8 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         """
         notice=getattr(self,'_driver_setup_notice',None)
         if notice is not None:notice.close()
+        updater=getattr(self,'_product_updates',None)
+        if updater is not None:updater.shutdown()
         preferences=getattr(self,'_preferences_dialog',None)
         report=getattr(preferences,'error_report',None)
         if report is not None and report.busy:raise RuntimeError(tr('error_report.busy_close'))
@@ -1046,7 +1049,13 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         licenses = getattr(self, '_licenses_dialog', None)
         if licenses is not None:
             licenses.hide()
+        support = getattr(self, '_support_dialog', None)
+        if support is not None:
+            support.shutdown()
         group_dialog = getattr(self, '_group_dialog', None)
+        files = getattr(group_dialog, '_files_dialog', None)
+        if files is not None:
+            files.shutdown()
         creator = getattr(group_dialog, 'instrument_creator', None)
         if creator is not None:
             creator.shutdown()
@@ -3611,11 +3620,15 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         appearance=set_layout(QHBoxLayout(self.appearance_card),METRICS['card_padding'],METRICS['side_action_gap'])
         self.appearance_choice=NativeSegmentedChoice((tr('appearance.light'),tr('appearance.dark')),symbols=('light','dark'))
         self.appearance_choice.set_selected(int(self._dark))
-        self.appearance_choice.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        self.appearance_choice.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         self.appearance_choice.selected.connect(self._select_appearance)
         self.preferences_button=NativeSettingsButton(tr('action.preferences'),self.open_preferences,icon_only=True)
-        self.preferences_button.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
-        appearance.addWidget(self.appearance_choice,2);appearance.addWidget(self.preferences_button,1)
+        self.preferences_button.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
+        self.info_button=NativeInfoButton(tr('support.action'),self.open_help)
+        appearance.addWidget(self.appearance_choice,1)
+        appearance.addWidget(self.preferences_button)
+        appearance.addWidget(self.info_button)
+        self.licenses_button=self.info_button
         layout.addWidget(self.appearance_card,0,0)
         self.actions_card = NativeCard(inset_role='compact-form')
         actions_layout = set_layout(
@@ -3629,7 +3642,6 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             ("recording", tr("recording_workspace.title"), self.open_recording),
             ("panic", tr("action.panic"), self.panic),
             ("reset", tr("action.reset"), self.reset),
-            ("licenses", tr("licenses.action"), self.open_licenses),
             ("restart", tr("action.restart"), self.restart),
             ("exit", tr("action.exit"), self._request_exit),
         )):
@@ -3652,6 +3664,10 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             elif action_id == 'licenses':
                 self.licenses_button = button
         layout.addWidget(self.actions_card, 1, 0)
+        from native_product_support import ProductHelpFilter, ProductUpdateController
+        self._product_updates = ProductUpdateController(self)
+        self._help_filter = ProductHelpFilter(self)
+        QApplication.instance().installEventFilter(self._help_filter)
         self._recording_dialog = None
         self._recording_rows = {}
         self._recording_save_worker = None
@@ -4148,6 +4164,11 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
                 dialog._select_preset_page(2), dialog._select_all_instruments()))
 
     def _release_group(self, dialog):
+        support = getattr(self, '_support_dialog', None)
+        if support is not None and support.parentWidget() is dialog:
+            visible = support.isVisible()
+            support.setParent(self, Qt.Dialog)
+            support.setVisible(visible)
         dialog.poll.stop()
         creator = getattr(dialog, 'instrument_creator', None)
         if creator is not None:
@@ -4387,10 +4408,27 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             dialog.error_report.refresh_capture()
 
     def open_licenses(self):
-        dialog=getattr(self,'_licenses_dialog',None)
+        self.open_help('licenses')
+
+    def open_help(self, topic=None):
+        from native_product_support import NativeProductSupportDialog
+        dialog = getattr(self, '_support_dialog', None)
         if dialog is None:
-            dialog=NativeLicensesDialog(self);self._licenses_dialog=dialog
-        dialog.show();dialog.raise_();dialog.activateWindow()
+            dialog = NativeProductSupportDialog(self)
+            self._support_dialog = dialog
+            self._licenses_dialog = dialog.licenses
+        parent = QApplication.activeModalWidget() or self
+        if parent is not dialog and dialog.parentWidget() is not parent:
+            dialog.setParent(parent, Qt.Dialog)
+        if topic == 'licenses':
+            dialog.tabs.setCurrentWidget(dialog.license_host)
+        elif topic:
+            dialog.show_context(topic)
+        else:
+            dialog.tabs.setCurrentWidget(dialog.info)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def set_driver_notice_suppressed(self,suppressed):
         try:
@@ -4417,6 +4455,11 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         dialog.activateWindow()
 
     def _release_preferences(self, dialog):
+        support = getattr(self, '_support_dialog', None)
+        if support is not None and support.parentWidget() is dialog:
+            visible = support.isVisible()
+            support.setParent(self, Qt.Dialog)
+            support.setVisible(visible)
         if getattr(self, "_preferences_dialog", None) is dialog:
             self._preferences_dialog = None
         dialog.deleteLater()
@@ -4424,6 +4467,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
     def open_midi_player(self):
         if getattr(self, "_midi_player", None) is None:
             self._midi_player = NativeMidiPlayerDialog(self)
+            self._midi_player.setProperty('supportTopic', 'player')
         self._midi_player.set_theme()
         self._midi_player.show()
         self._midi_player.raise_()
@@ -4435,6 +4479,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
     def open_recording(self):
         if self._recording_dialog is None:
             self._recording_dialog = NativeRecordingDialog(self)
+            self._recording_dialog.setProperty('supportTopic', 'recording')
             self._recording_rows = self._recording_dialog.rows
             self.midi_record_button, self.midi_record_save_button, _ = self._recording_rows['midi']
             self.record_button, self.record_save_button, _ = self._recording_rows['wave']
@@ -4694,6 +4739,10 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
 
     def _request_exit(self):
         """Exit explicitly; only the window X may honor close-to-tray."""
+        updater=getattr(self,'_product_updates',None)
+        if updater is not None and updater.prepared is not None:
+            updater.finish_close()
+            return
         self._force_close = True
         if not self.close():
             self._force_close = False
@@ -4800,6 +4849,8 @@ def run_live(*, instance=None) -> int:
             device_catalog=devices, audio_telemetry=telemetry,
             native_session_builder=prepare_live_native_session,
         )
+        if os.environ.get('ABMSYNTH_RECOVERY_PROFILE'):
+            window.setWindowTitle(f'{PRODUCT_NAME} · {tr("support.recovery_session")}')
     except BaseException as error:
         # Constructor failure precedes the normal aboutToQuit lifetime owner.
         # Stop/join readers before releasing the session, then propagate the
@@ -4850,6 +4901,7 @@ def run_live(*, instance=None) -> int:
             QTimer.singleShot(0, window._start_initial_devices)
     else:
         window.show()
+    QTimer.singleShot(1500, window._product_updates.startup)
     try:
         result = app.exec()
     finally:
@@ -4860,7 +4912,7 @@ def run_live(*, instance=None) -> int:
         try:
             # The replacement waits for this process to finish normally, so
             # QApplication/Qt thread storage are not torn down inside a slot.
-            spawn_restart_after_exit()
+            spawn_restart_after_exit(recovery=getattr(window, '_recovery_restart_requested', False))
         except OSError as exc:
             print(tr("error.restart_failed", error=exc), file=sys.stderr)
             return 1

@@ -144,6 +144,9 @@ def _replace_ini(temporary,target,before_hash):
             time.sleep(.05)
 
 def settings_path() -> Path:
+    recovery = os.environ.get('ABMSYNTH_RECOVERY_PROFILE')
+    if recovery:
+        return Path(recovery) / 'ABMSynth.ini'
     # Audio audits temporarily disable UI_ONLY to exercise real decode streams.
     # Their explicitly selected INI must remain isolated during that phase too.
     isolated = os.environ.get("ABMSYNTH_TEST_INI_PATH")
@@ -628,6 +631,7 @@ RECORDING_RATE_REJECTIONS = {
 # One apply policy shared by the dialog and runtime snapshot. Login startup
 # registration itself crosses the Save boundary, not the live preview boundary.
 LIVE_PREFERENCE_FIELDS = (
+    "check_updates_on_startup",
     "main_log_level", "main_log_detail",
     "voices", "interpolation", "midi_cpu_limit",
     "default_reverb_send", "soundfont_fx_policy", "auto_reset_delay_s", "priority",
@@ -705,8 +709,10 @@ class EnginePreferences:
     exclusive_block_ms: int = 5
     main_log_level: str = "info"
     main_log_detail: str = "summary"
+    check_updates_on_startup: bool = True
 
     def validate(self) -> "EnginePreferences":
+        if type(self.check_updates_on_startup) is not bool:raise ValueError('check_updates_on_startup')
         if self.main_log_level not in ('info','warning','error'):raise ValueError('main_log_level')
         if self.main_log_detail not in ('changes','summary','detailed'):raise ValueError('main_log_detail')
         if self.synthesis_mode not in ("compatible", "high_performance"):
@@ -829,6 +835,7 @@ def save_engine_preferences(settings: EnginePreferences, path: Path | None = Non
 def engine_ini_values(settings: EnginePreferences) -> dict[str, str]:
     settings.validate()
     return {
+        "check_updates_on_startup": "1" if settings.check_updates_on_startup else "0",
         "main_log_level": settings.main_log_level,
         "main_log_detail": settings.main_log_detail,
         "sample_rate": str(settings.sample_rate),

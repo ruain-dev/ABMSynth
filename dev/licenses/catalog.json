@@ -6,7 +6,7 @@
     {
       "id": "abmsynth",
       "name": "ABMSynth",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "category": "own",
       "license": "PolyForm Noncommercial 1.0.0 + Music Production Additional Permission 1.0",
       "description_id": "licenses.role_abmsynth",
@@ -59,10 +59,10 @@
       "documents": [
         {
           "path": "qt/PySide6/METADATA",
-          "source": "installed distribution PySide6/pyside6-6.11.2.dist-info/METADATA",
-          "bytes": 5416,
-          "sha256": "bddd6d1e6f840de4ecf6464c1afe885491c76d1081c72ce30744deaa74949276",
-          "encoding": "utf-8-sig"
+          "source": "PySide6 6.11.2 CPython 3.14 full-API build: PySide6 METADATA",
+          "bytes": 5066,
+          "sha256": "9feb98faacd8982429a315df8189ca1e6b1e53207e0ed0fce4dc96ddea2c170d",
+          "encoding": "utf-8"
         },
         {
           "path": "qt/PySide6/LicenseRef-Qt-Commercial.txt",
@@ -72,39 +72,11 @@
           "encoding": "utf-8-sig"
         },
         {
-          "path": "qt/PySide6_Essentials/METADATA",
-          "source": "installed distribution PySide6_Essentials/pyside6_essentials-6.11.2.dist-info/METADATA",
-          "bytes": 3802,
-          "sha256": "a9bdd4937ee837eb46e0c38f9c0ab6c59a6f788d711b96b63c726247ca7a2379",
-          "encoding": "utf-8-sig"
-        },
-        {
-          "path": "qt/PySide6_Essentials/LicenseRef-Qt-Commercial.txt",
-          "source": "installed distribution PySide6_Essentials/pyside6_essentials-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
-          "bytes": 470,
-          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
-          "encoding": "utf-8-sig"
-        },
-        {
-          "path": "qt/PySide6_Addons/METADATA",
-          "source": "installed distribution PySide6_Addons/pyside6_addons-6.11.2.dist-info/METADATA",
-          "bytes": 4168,
-          "sha256": "6c14f94cb03f754a3d8e9ada4d726dbc08aff04d4f0b4377483f9921aa646952",
-          "encoding": "utf-8-sig"
-        },
-        {
-          "path": "qt/PySide6_Addons/LicenseRef-Qt-Commercial.txt",
-          "source": "installed distribution PySide6_Addons/pyside6_addons-6.11.2.dist-info/licenses/LicenseRef-Qt-Commercial.txt",
-          "bytes": 470,
-          "sha256": "4f54763ac0fe2abd8f7f8d8fe370a94a08ebf84786aa0b91045bd6628deb08a3",
-          "encoding": "utf-8-sig"
-        },
-        {
           "path": "qt/shiboken6/METADATA",
-          "source": "installed distribution shiboken6/shiboken6-6.11.2.dist-info/METADATA",
-          "bytes": 2542,
-          "sha256": "d118511674eb858e7e0666fae0de10ac79ae31800ad1215ad57285953d4ad241",
-          "encoding": "utf-8-sig"
+          "source": "PySide6 6.11.2 CPython 3.14 full-API build: shiboken6 METADATA",
+          "bytes": 2335,
+          "sha256": "a912c03a243bbe234f0377a7c6af9d4bde5bbe5f0bb6cab152db02cf8dcecb6b",
+          "encoding": "utf-8"
         },
         {
           "path": "qt/shiboken6/LicenseRef-Qt-Commercial.txt",

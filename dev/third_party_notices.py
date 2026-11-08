@@ -84,5 +84,5 @@ def read_notice(document,root=NOTICE_ROOT):
     if len(raw)!=document['bytes'] or hashlib.sha256(raw).hexdigest()!=document['sha256']:
         raise ValueError('notice file differs from reviewed original')
     encoding=document.get('encoding','utf-8-sig')
-    if encoding not in ('utf-8-sig','cp1252'):raise ValueError('unsupported notice encoding')
+    if encoding not in ('utf-8','utf-8-sig','cp1252'):raise ValueError('unsupported notice encoding')
     return raw.decode(encoding)

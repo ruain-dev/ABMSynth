@@ -1,10 +1,14 @@
 """Canonical ABMSynth product identifiers shared by Python runtime layers."""
 
 PRODUCT_NAME = "ABMSynth"
-PRODUCT_VERSION = "1.0.0"
+PRODUCT_VERSION = "1.0.1"
 PRODUCT_TAG = "v" + PRODUCT_VERSION
 PRODUCT_PUBLISHER = "ruain"
 PRODUCT_COPYRIGHT = "Copyright (c) 2026 ruain"
+PROJECT_URL = "https://github.com/ruain-dev/ABMSynth"
+RELEASES_URL = PROJECT_URL + "/releases"
+ISSUES_URL = PROJECT_URL + "/issues/new"
+RELEASE_API_URL = "https://api.github.com/repos/ruain-dev/ABMSynth/releases/latest"
 APP_USER_MODEL_ID = "ABMSynth.Desktop"
 MIDI_PORT_NAME = "ABMSynth MIDI In"
 WINMM_PIPE_NAME = r"\\.\pipe\ABMSynthMidiIn"

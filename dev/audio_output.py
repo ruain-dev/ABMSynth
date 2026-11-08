@@ -2138,6 +2138,7 @@ class AudioTelemetry:
         from midi_input_runtime import MidiHarmonyTracker
         self.chord_tracker=MidiHarmonyTracker()
         self._latest_chord=None
+        self._latest_chord_diagnostic=None
         from tempo_analysis import TempoAnalysisService
         self.tempo_analysis=TempoAnalysisService()
         self._tempo_error=None;self._tempo_failure_until=0.
@@ -2307,8 +2308,22 @@ class AudioTelemetry:
 
     def _publish_chord(self,batch,identity,now,*,excluded=(),invalidated=False):
         reading=self.chord_tracker.observe_events(batch,identity=identity,excluded=excluded,now_ns=time.perf_counter_ns(),invalidated=invalidated)
-        with self._condition:self._latest_chord=(identity,now,reading)
+        held=tuple(sorted(self.chord_tracker.live))
+        diagnostic=dict(known=bool(batch is not None and batch.known and not invalidated),
+            serial=None if batch is None else batch.serial,
+            history_complete=None if batch is None else batch.history_complete,
+            held_count=len(held),held_notes=held[:128],held_notes_truncated=len(held)>128,
+            symbols=reading.symbols)
+        with self._condition:
+            self._latest_chord=(identity,now,reading)
+            self._latest_chord_diagnostic=(identity,diagnostic)
         self.tempo_analysis.observe_notes(None if invalidated else batch,time.perf_counter())
+
+    def chord_diagnostic(self):
+        """Bounded immutable worker copy for detailed capture; no GUI native reads."""
+        with self._condition:snapshot=self._latest_chord_diagnostic
+        if snapshot is None or snapshot[0]!=self._performance_identity(self._display_stamp()):return {}
+        return dict(snapshot[1])
 
     def _collect_tempo(self,stamp):
         if time.monotonic()<self._tempo_failure_until:return
@@ -2408,6 +2423,7 @@ class AudioTelemetry:
                 self.tempo_analysis.observe_notes(None,time.perf_counter())
                 with self._condition:
                     self._latest_chord=None
+                    self._latest_chord_diagnostic=None
                     self._latest = None
                     self._latest_display = None
                     error = str(exc)
@@ -2450,6 +2466,7 @@ class AudioTelemetry:
                 self._performance_cache = None
                 self._latest_performance = None
                 self.chord_tracker.reset();self._latest_chord=None
+                self._latest_chord_diagnostic=None
             self.tempo_analysis.close()
 
     def engine_status(self) -> EngineStatus:

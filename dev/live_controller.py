@@ -105,7 +105,8 @@ class LiveController:
             except OSError as exc:
                 self.append_log(log_text("runtime.priority_failed", error=exc))
             try:
-                set_midi_mapper_enabled(self._engine_preferences.windows_midi_default)
+                if not os.environ.get('ABMSYNTH_RECOVERY_PROFILE'):
+                    set_midi_mapper_enabled(self._engine_preferences.windows_midi_default)
             except OSError as exc:
                 self.append_log(log_text("player.mapper_preference_failed",error=exc))
         self.status_timer = QTimer(self); self.status_timer.timeout.connect(self.update_status); self.status_timer.start(100)

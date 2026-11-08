@@ -9,6 +9,18 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+```
+
+Qt 바인딩은 Python 3.14 전용 전체 API 빌드를 사용합니다.
+일반 cp310-abi3 휠은 장시간 실행에서 참조 카운터를 훼손할 수 있습니다.
+대응 소스 자료의 `qt-build-recipes/PYSIDE-CP314.md`에 따라
+PySide6·shiboken6 휠을 먼저 준비하세요. 원본 Qt·FFmpeg 파일은 유지합니다.
+준비한 두 휠을 `third_party/wheels/qt-cp314`에 놓습니다.
+실제 파일은 `DEPENDENCIES.json`의 `qt_binding_build`와 대조합니다.
+
+```powershell
+$qtWheels = Get-ChildItem third_party/wheels/qt-cp314/*.whl | ForEach-Object FullName
+python -m pip install --no-deps @qtWheels
 python -m pip install -r dev/requirements-abmsynth.txt
 ```
 

@@ -348,12 +348,19 @@ def run_single_application(start):
     """One startup/restart ownership path shared by both executable entries."""
     await_previous_instance_exit()
     instance=SingleApplicationInstance()
+    admission=SingleApplicationInstance(name=r'Global\ABMSynth.Update.v1')
     try:
-        if not instance.acquire():
+        if not admission.acquire():
+            from i18n import tr
+            raise RuntimeError(tr('support.update_in_progress'))
+        acquired=instance.acquire()
+        admission.close()
+        if not acquired:
             instance.request_activation()
             return 0
         return start(instance)
     finally:
+        admission.close()
         instance.close()
 
 
@@ -372,7 +379,7 @@ def ui_animations_enabled() -> bool:
     return True
 
 
-def spawn_restart_after_exit() -> None:
+def spawn_restart_after_exit(*, recovery=False) -> None:
     """Launch a replacement that waits until this process has fully exited."""
     environment = os.environ.copy()
     environment[RESTART_PARENT_PID_ENV] = str(os.getpid())
@@ -380,6 +387,8 @@ def spawn_restart_after_exit() -> None:
     if not getattr(sys, "frozen", False):
         command.append(str(Path(__file__).with_name("app.py").resolve()))
     command.extend(sys.argv[1:])
+    if recovery and '--recovery' not in command:
+        command.append('--recovery')
     subprocess.Popen(command, env=environment, close_fds=True)
 
 

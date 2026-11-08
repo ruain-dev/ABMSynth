@@ -3520,6 +3520,8 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
         QListWidget::item:selected {{ background: {selection}; color: #ffffff; }}
         QListWidget[passiveRows="true"]::item:hover:!selected:enabled {{ background: transparent; }}
         QListWidget#LicenseComponents, QTextBrowser#LicenseDocument {{ background: {p.input}; color: {p.text}; border: 0; }}
+        QTextBrowser#SupportDocument {{ background: {p.input}; color: {p.text}; border: 0; padding: 8px; }}
+        QWidget#EmbeddedLicensePage {{ background: transparent; border: 0; }}
         QListWidget#LicenseComponents::item {{ padding: 6px 8px; }}
         {native_item_hover_stylesheet(p,'QListWidget#LicenseComponents::item')}
         QListWidget#LicenseComponents::item:selected {{ background: {p.selection}; color: #ffffff; }}
@@ -4806,6 +4808,34 @@ class NativeSettingsButton(NativeActionButton):
         self._sync_gear();super().paintEvent(event)
 
 
+class NativeInfoButton(NativeActionButton):
+    """Compact information entry point with a theme-aware circled i."""
+    def __init__(self, caption, callback, parent=None):
+        super().__init__('', parent)
+        self.setAccessibleName(caption)
+        self.setToolTip(caption)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setMinimumSize(0, 0)
+        self.setFixedSize(FORM_ROW_HEIGHT, FORM_ROW_HEIGHT)
+        self.clicked.connect(callback)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = self.palette().color(QPalette.ButtonText)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        radius = min(self.width(), self.height()) * .28
+        painter.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QPen(color, 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.drawPoint(QPointF(center.x(), center.y() - radius * .42))
+        painter.drawLine(QPointF(center.x(), center.y() - radius * .05),
+                         QPointF(center.x(), center.y() + radius * .52))
+        painter.end()
+
+
 class NativeAppearanceButton(NativeActionButton):
     """Vector sun/moon with the same segmented button feedback and hit target."""
     def __init__(self, symbol, caption, parent=None):
@@ -5695,6 +5725,16 @@ class NativeMessageBox(QMessageBox):
     def setIcon(self, icon):self._set_message_content(super().setIcon,icon)
     def setCheckBox(self, checkbox):self._set_message_content(super().setCheckBox,checkbox)
 
+    def setContentWidget(self, widget, preferred_width=620):
+        """Optional scrollable detail, within the common message geometry."""
+        previous=getattr(self,'_message_content_widget',None)
+        if previous is not None and previous is not widget:
+            self.layout().removeWidget(previous);previous.deleteLater()
+        self._message_content_widget=widget
+        self._message_content_width=preferred_width
+        widget.setParent(self);widget.setMinimumSize(0,0)
+        self._sync_message_presentation()
+
     def _sync_primary_action(self):
         # Accent completes task intent;Enter/Escape retain explicit safety.
         # A destructive task is still the visible command,not a Cancel action.
@@ -5718,6 +5758,23 @@ class NativeMessageBox(QMessageBox):
         for child in (self,*self.findChildren(QWidget)):
             apply_native_font_raster(child)
         root=self.layout()
+        content=getattr(self,'_message_content_widget',None)
+        if content is not None and root.indexOf(content)<0:
+            # Insert detail before the checkbox/commands. Stock QMessageBox
+            # may rebuild its grid when setters run; remount by identity.
+            trailing=[root.getItemPosition(i)[0] for i in range(root.count())
+                      if isinstance(root.itemAt(i).widget(),QDialogButtonBox)
+                      or root.itemAt(i).widget() is self.checkBox()]
+            row=min(trailing,default=root.rowCount())
+            items=[]
+            for i in reversed(range(root.count())):
+                position=root.getItemPosition(i)
+                if position[0]>=row:
+                    item=root.takeAt(i);items.append((item,position))
+            for item,(r,c,rs,cs) in reversed(items):root.addItem(item,r+1,c,rs,cs)
+            root.addWidget(content,row,0,1,max(1,root.columnCount()))
+            for r in range(root.rowCount()):root.setRowStretch(r, int(r==row))
+            content.show()
         icon=self.findChild(QLabel,'qt_msgboxex_icon_label')
         has_icon=icon is not None and not icon.isHidden()
         for name in ('qt_msgbox_label','qt_msgbox_informativelabel'):
@@ -5780,7 +5837,8 @@ class NativeMessageBox(QMessageBox):
             body=max(body,preferred)
         body+=icon_width
         commands=max((box.sizeHint().width() for box in self.findChildren(QDialogButtonBox)),default=0)
-        return max(body,commands)+margins.left()+margins.right()
+        detail=getattr(self,'_message_content_width',0)
+        return max(body,commands,detail)+margins.left()+margins.right()
 
     def minimumSizeHint(self):
         return QSize(0, 0)

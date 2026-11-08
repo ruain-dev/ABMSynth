@@ -47,7 +47,7 @@ verified against its reviewed SHA-256 before display.
 
 ## Sources and replacement rights
 
-The matching release must publish ABMSynth-1.0.0-ThirdPartySources.zip beside
+The matching release must publish ABMSynth-1.0.1-ThirdPartySources.zip beside
 its binary assets and SHA256SUMS.txt. It contains version-matched upstream
 Qt/PySide, FFmpeg, zlib, SoundTouch sources, available build recipes and the
 BASSenc_MP3 source archive. See THIRD_PARTY_SOURCES.md in the release root.

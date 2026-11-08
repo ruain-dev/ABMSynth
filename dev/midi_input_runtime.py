@@ -3149,16 +3149,15 @@ class MidiChordEventSource:
                     for address in tuple(self.notes):
                         if address[0]==channel:self.notes.pop(address)
                 elif status in (128,144):
-                    address=(channel,key);count=self.notes.get(address,0)
-                    if status==144 and velocity:self.notes[address]=count+1
-                    elif count>1:self.notes[address]=count-1
+                    address=(channel,key)
+                    if status==144 and velocity:self.notes[address]=1
                     else:self.notes.pop(address,None)
                 else:continue
                 self.serial+=1;self.rows.append((self.serial,packed,channel,int(qpc)))
     
     def snapshot(self,cursor):
         with self.lock:
-            complete=not self.rows or cursor>=self.rows[0][0]-1
+            complete=0<=cursor<=self.serial and (not self.rows or cursor>=self.rows[0][0]-1)
             return MidiChordEventBatch(self.serial,
                 tuple(row for row in self.rows if row[0]>cursor),tuple(self.notes.items()),
                 self.known,complete,id(self))
@@ -3176,10 +3175,12 @@ class MidiChordTracker:
     def reset(self):
         self.identity=None;self.cursor=0;self.notes={};self.reading=MidiChordReading()
         self.last_transitions=();self.source=None;self.needs_resync=False
+        self.last_resync=False
 
     def observe_events(self,batch,*,identity,excluded=()):
         if self.identity!=identity:self.reset();self.identity=identity
         self.last_transitions=()
+        self.last_resync=False
         if batch is None or not batch.known:
             self.notes={};self.reading=MidiChordReading();self.needs_resync=True
             if batch is not None:self.cursor=batch.serial
@@ -3188,9 +3189,11 @@ class MidiChordTracker:
         if self.needs_resync or not batch.history_complete or self.source is not None and self.source!=batch.source:
             # Missing history cannot be reconstructed. Final counts are atomic.
             self.notes=dict(batch.notes)
+            self.last_resync=True
         else:
             # Aggregate once per batch,not all channel/key pairs for every row.
-            # Same-key overlaps change counts,not the chord pitch membership.
+            # Count distinct channels per key. Within one channel, forwarded
+            # NoteOff releases the complete key (BASS without NOTEOFF1).
             counts=[0]*128
             for (ch,key),count in self.notes.items():
                 if ch not in excluded:counts[key]+=count
@@ -3209,19 +3212,25 @@ class MidiChordTracker:
                 elif 0<=key<128:
                     address=(channel,key);count=self.notes.get(address,0)
                     if status==144 and velocity:
-                        self.notes[address]=count+1
+                        self.notes[address]=1
                         if channel not in excluded:
-                            changed=counts[key]==0;counts[key]+=1
+                            changed=counts[key]==0
+                            if not count:counts[key]+=1
                     elif count:
-                        if count>1:self.notes[address]=count-1
-                        else:self.notes.pop(address)
+                        self.notes.pop(address)
                         if channel not in excluded:
-                            counts[key]-=1;changed=counts[key]==0
+                            counts[key]-=count;changed=counts[key]==0
                 if changed:
                     reading=MidiChordReading(midi_chord_candidates(tuple(
                         key for key,count in enumerate(counts) if count)))
                     if reading!=self.reading:transitions.append((serial,qpc,reading))
                     self.reading=reading
+        # The current gate image and journal are copied atomically. Any
+        # disagreement retires observer context instead of retaining a stale
+        # held note, including a reused source whose serial restarted.
+        current=dict(batch.notes)
+        if self.notes!=current:
+            self.notes=current;self.last_resync=True;transitions=[]
         self.cursor=batch.serial;self.source=batch.source;self.needs_resync=False
         self.reading=MidiChordReading(midi_chord_candidates(tuple(sorted({
             key for (ch,key),count in self.notes.items() if count and ch not in excluded}))))
@@ -3354,18 +3363,16 @@ class MidiHarmonyTracker:
         if ch in self.excluded or not 0<=key<128:return
         address=(ch,key);old=self.live.get(address)
         if status==144 and velocity:
-            if old:self.live[address]=(old[0]+1,old[1])
+            if old:self.live[address]=(1,old[1])
             else:
                 self.live[address]=(1,stamp);self.attack_serial+=1;self.last_attack=stamp
             if not self.onsets or stamp>self.onsets[-1]:self.onsets.append(stamp)
             self.last_release=None
         elif old:
-            if old[0]>1:self.live[address]=(old[0]-1,old[1])
-            else:
-                self.live.pop(address);ended=(ch,key,old[1],stamp)
-                self.history.append(ended);self.role_history.append(ended)
-                if stamp>old[1]:self.durations.append(stamp-old[1])
-                if not self.live:self.last_release=stamp
+            self.live.pop(address);ended=(ch,key,old[1],stamp)
+            self.history.append(ended);self.role_history.append(ended)
+            if stamp>old[1]:self.durations.append(stamp-old[1])
+            if not self.live:self.last_release=stamp
         self._track_bass(stamp)
 
     def _track_bass(self,stamp):
@@ -3792,6 +3799,7 @@ class MidiHarmonyTracker:
             self.reading=MidiChordReading(self.reading.symbols,approximate=True)
             return self.reading
         self.raw.observe_events(batch,identity=identity,excluded=excluded)
+        resync|=self.raw.last_resync
         if invalidated or batch is None or not batch.known:
             self._clear_context();return self.reading
         excluded=frozenset(excluded)
@@ -3857,7 +3865,7 @@ class ChannelMidiActivity:
     """
 
     def __init__(self,event_source=None):
-        self.event_source=event_source
+        self.event_source=event_source if event_source is not None else MidiChordEventSource()
         self.lock = threading.Lock()
         self.notes = [{} for _ in range(MIDI_CHANNEL_LIMIT)]
         self.velocity = [0] * MIDI_CHANNEL_LIMIT
@@ -3878,7 +3886,7 @@ class ChannelMidiActivity:
             if self.event_source is not None:
                 self.event_source.submit(((0x90|(key<<8)|(velocity<<16),channel,0,int(current*1_000_000_000)),))
 
-    def note_off(self, channel: int, key: int, *, now=None):
+    def note_off(self, channel: int, key: int, *, now=None, chord_release=True):
         with self.lock:
             notes = self.notes[channel]
             count = notes.get(key, 0)
@@ -3891,7 +3899,7 @@ class ChannelMidiActivity:
                 notes.pop(key, None)
             else:
                 notes[key] = count - 1
-            if self.event_source is not None:
+            if self.event_source is not None and chord_release:
                 current=time.monotonic() if now is None else float(now)
                 self.event_source.submit(((0x80|(key<<8),channel,0,int(current*1_000_000_000)),))
 
@@ -9009,7 +9017,7 @@ class NativeMidiActivity:
             function=self.library.native_activity_chord_copy
             function.argtypes=[ptr,wide,ctypes.POINTER(wide),uint,ctypes.POINTER(wide),uint,ctypes.POINTER(wide),uint]
             function.restype=ctypes.c_int
-            self.chord_available=self.library.native_activity_chord_version()==1
+            self.chord_available=self.library.native_activity_chord_version()==2
         try:
             for name,args,result in (
                 ('version',[],uint),('lease_size',[],uint),
@@ -9052,7 +9060,8 @@ class NativeMidiActivity:
             int(rows[i*4+3])*1_000_000_000//frequency) for i in range(total))
         # This is a private completed copy,not borrowed native memory. Scan
         # zeros in NumPy instead of holding Python's GIL over128x128 cells.
-        # Keep flattened address order and exact uint64 multiplicities.
+        # Keep flattened address order. ABI2 stores effective 0/1 key gates,
+        # independently of the physical duplicate-On activity counters.
         import numpy as np
         image=np.ctypeslib.as_array(counts)
         notes=tuple(((i//128,i%128),int(counts[i])) for i in np.flatnonzero(image).tolist())
@@ -9166,13 +9175,15 @@ class NativeMidiActivity:
             version=getattr(self.library,'native_activity_channel_visual_version',None)
             if version is not None:version.argtypes=[];version.restype=uint
             self._transfer_extended=version is not None and version()==1
+            self._transfer_chord=hasattr(self.library,'native_activity_transfer_copy_v3')
             for name,args,result in (
                 ('version',[],uint),('header',[ptr,pwide,uint],uint),
                 ('copy',[ptr,wide,pwide,uint,pwide,uint,pwide,uint,pwide,uint,puint,uint],ctypes.c_int),
                 ('import',[ptr,wide,pwide,uint,pwide,uint,pwide,uint,pwide,uint,pwide,uint,puint,uint],ctypes.c_int)):
                 function=getattr(self.library,'native_activity_transfer_'+name);function.argtypes=args;function.restype=result
             for name in ('header','copy'):
-                function=getattr(self.library,'native_activity_transfer_'+name+('_v2' if self._transfer_extended else ''))
+                suffix='_v3' if self._transfer_chord else '_v2' if self._transfer_extended else ''
+                function=getattr(self.library,'native_activity_transfer_'+name+suffix)
                 base=getattr(self.library,'native_activity_transfer_'+name)
                 function.argtypes=base.argtypes;function.restype=base.restype
                 setattr(self,'_transfer_'+name,function)
@@ -9190,8 +9201,8 @@ class NativeMidiActivity:
         header,ch_rows,preset_rows,fifo_rows,count_rows,available_rows=self._export_transfer_buffers(attempts=attempts)
         _revision,channels,presets,fifo,_known,_frequency,available,_ordinal,_version=header
         rows=lambda values,width,count:tuple(tuple(values[index*width:(index+1)*width]) for index in range(count))
-        return dict(header=header,channels=rows(ch_rows,6 if _version==2 else 4,channels),presets=rows(preset_rows,7,presets),
-            fifo=rows(fifo_rows,5,fifo),counts=rows(count_rows,4,channels*256),available=tuple(available_rows[:available]))
+        return dict(header=header,channels=rows(ch_rows,6 if _version>=2 else 4,channels),presets=rows(preset_rows,7,presets),
+            fifo=rows(fifo_rows,5,fifo),counts=rows(count_rows,5 if _version>=3 else 4,channels*256),available=tuple(available_rows[:available]))
 
     def _export_transfer_buffers(self,*,attempts=8):
         """Owned coherent UINT buffers, never borrowed native storage.
@@ -9207,10 +9218,10 @@ class NativeMidiActivity:
                 header=(ctypes.c_uint64*9)()
                 if self._transfer_header(pointer,header,9)!=9:raise RuntimeError('native activity transfer header')
                 revision,channels,presets,fifo,known,frequency,available,ordinal,version=map(int,header)
-                if channels!=self.channels or not frequency or version not in (1,2):raise ValueError('native activity transfer domain')
+                if channels!=self.channels or not frequency or version not in (1,2,3):raise ValueError('native activity transfer domain')
                 counts=channels*256
-                ch_rows=(ctypes.c_uint64*(channels*(6 if version==2 else 4)))();preset_rows=(ctypes.c_uint64*max(1,presets*7))()
-                fifo_rows=(ctypes.c_uint64*max(1,fifo*5))();count_rows=(ctypes.c_uint64*(counts*4))()
+                ch_rows=(ctypes.c_uint64*(channels*(6 if version>=2 else 4)))();preset_rows=(ctypes.c_uint64*max(1,presets*7))()
+                fifo_rows=(ctypes.c_uint64*max(1,fifo*5))();count_rows=(ctypes.c_uint64*(counts*(5 if version>=3 else 4)))()
                 available_rows=(ctypes.c_uint*max(1,available))()
                 status=self._transfer_copy(pointer,revision,ch_rows,channels,preset_rows,presets,
                     fifo_rows,fifo,count_rows,counts,available_rows,available)
@@ -9224,7 +9235,7 @@ class NativeMidiActivity:
         if set(state)!=set(('header','channels','presets','fifo','counts','available')):raise ValueError('native activity transfer fields')
         header=tuple(state['header'])
         if len(header)!=9 or any(type(value) is not int or not 0<=value<2**64 for value in header):raise ValueError('native activity transfer header values')
-        if header[1]!=self.channels or header[8] not in (1,2) or header[4]>1:raise ValueError('native activity transfer header domain')
+        if header[1]!=self.channels or header[8] not in (1,2,3) or header[4]>1:raise ValueError('native activity transfer header domain')
         def pack(name,width,count):
             from itertools import chain
             import numpy as np
@@ -9239,8 +9250,8 @@ class NativeMidiActivity:
             # than expanding128k Python positional arguments into ctypes.
             packed=np.fromiter(flat,dtype=np.uint64,count=len(flat)) if flat else np.zeros(1,dtype=np.uint64)
             return (ctypes.c_uint64*max(1,count*width)).from_buffer(packed)
-        ch_rows=pack('channels',6 if header[8]==2 else 4,self.channels);preset_rows=pack('presets',7,header[2])
-        fifo_rows=pack('fifo',5,header[3]);count_rows=pack('counts',4,self.channels*256)
+        ch_rows=pack('channels',6 if header[8]>=2 else 4,self.channels);preset_rows=pack('presets',7,header[2])
+        fifo_rows=pack('fifo',5,header[3]);count_rows=pack('counts',5 if header[8]>=3 else 4,self.channels*256)
         available=tuple(state['available'])
         if len(available)!=header[6] or any(type(value) is not int or not 0<=value<2**32 for value in available):raise ValueError('native activity transfer available values')
         available_rows=None if validate_only else (ctypes.c_uint*max(1,len(available)))(*available)
@@ -9280,6 +9291,10 @@ class NativeMidiActivity:
             note_counts=tuple(dict(rows) for rows in channel.notes)
             velocities=tuple(channel.velocity);times=tuple(channel.last_on)
             visual_phases=tuple(channel.visual_phase);visual_initials=tuple(channel.visual_initial)
+            chord_source=channel.event_source
+            if chord_source is not None:
+                with chord_source.lock:chord_notes=dict(chord_source.notes)
+            else:chord_notes={(ch,key):1 for ch,rows in enumerate(note_counts) for key,value in rows.items() if value and key<128}
             active={identity(key):count(value) for key,value in sf.active_notes.items()}
             held={tuple(key):tuple(identity(row) for row in rows) for key,rows in sf.note_rows.items()}
             played={identity(row) for row in sf.played_rows}
@@ -9296,8 +9311,11 @@ class NativeMidiActivity:
             for key,value in rows.items():key_cell((ch,key));count(value)
             if ch>=self.channels and (velocities[ch] or times[ch]):raise ValueError('native activity legacy inactive channel')
         channels=[]
-        if not hasattr(self,'_empty_transfer_counts'):
-            self._empty_transfer_counts=tuple((ch,key,0,0) for ch in range(self.channels) for key in range(256))
+        extended_chord=reference['header'][8]>=3
+        if getattr(self,'_empty_transfer_counts_version',None)!=reference['header'][8]:
+            self._empty_transfer_counts=tuple((ch,key,0,0,0) if extended_chord else (ch,key,0,0)
+                for ch in range(self.channels) for key in range(256))
+            self._empty_transfer_counts_version=reference['header'][8]
         counts=list(self._empty_transfer_counts)
         physical_by_channel=[{} for _ in range(self.channels)]
         for (ch,key),value in overlap.items():physical_by_channel[ch][key]=value
@@ -9306,9 +9324,10 @@ class NativeMidiActivity:
             physical=physical_by_channel[ch];activity=note_counts[ch]
             activity_total=sum(activity.values());overlap_total=sum(physical.values())
             for key in activity.keys()|physical.keys():
-                counts[ch*256+key]=(ch,key,activity.get(key,0),physical.get(key,0))
+                row=(ch,key,activity.get(key,0),physical.get(key,0))
+                counts[ch*256+key]=row+(int((ch,key) in chord_notes),) if extended_chord else row
             channels.append((activity_total,velocities[ch],phase(times[ch],reference['channels'][ch][2]),overlap_total))
-            if reference['header'][8]==2:
+            if reference['header'][8]>=2:
                 ticks=phase(visual_phases[ch],reference['channels'][ch][4])
                 initial=visual_initials[ch]
                 if not math.isfinite(initial) or not 0<=initial<=100:raise ValueError('native channel visual initial')
@@ -9387,13 +9406,15 @@ class NativeMidiActivity:
         frequency=state['header'][5];absent=2**64-1
         keys=lambda address:(address&65535,address>>16)
         overlap={};notes=[{} for _ in range(128)];velocity=[0]*128;last_on=[0.0]*128
-        for ch,key,activity,physical in state['counts']:
+        chord_notes={}
+        for ch,key,activity,physical,*gate in state['counts']:
             if activity:notes[ch][key]=activity
             if physical:overlap[ch,key]=physical
+            if key<128 and (gate[0] if gate else activity):chord_notes[ch,key]=1
         visual_phases=[0.]*128;visual_initials=[0.]*128
         for ch,row in enumerate(state['channels']):
             velocity[ch]=row[1];last_on[ch]=row[2]/frequency
-            if state['header'][8]==2:
+            if state['header'][8]>=2:
                 visual_phases[ch]=row[4]/frequency
                 visual_initials[ch]=ctypes.c_double.from_buffer_copy(ctypes.c_uint64(row[5])).value
         active={};played=set();visuals={};released={};held={}
@@ -9407,7 +9428,7 @@ class NativeMidiActivity:
             held.setdefault((ch,key),deque()).extend(keys(address) for _ in range(size))
         available={keys(address) for address in state['available']} if state['header'][4] else None
         return _LegacyActivityStage(self,owner,(owner.stream_handle,owner.stream_generation,self.pointer),
-                (overlap,notes,velocity,last_on,active,held,played,visuals,released,available,visual_phases,visual_initials))
+                (overlap,notes,velocity,last_on,active,held,played,visuals,released,available,visual_phases,visual_initials,chord_notes))
 
     def commit_legacy_state(self,owner,staged):
         """Commit only a fully staged activity image; no BASS/audio/native writes."""
@@ -9424,11 +9445,16 @@ class NativeMidiActivity:
 
     def _commit_legacy_state_unlocked(self,staged):
         owner=staged.owner
-        overlap,notes,velocity,last_on,active,held,played,visuals,released,available,visual_phases,visual_initials=staged.values
+        overlap,notes,velocity,last_on,active,held,played,visuals,released,available,visual_phases,visual_initials,chord_notes=staged.values
         sf=owner.soundfont_activity;channel=owner.midi_activity
         owner.midi_options.active_notes=overlap
         channel.notes=notes;channel.velocity=velocity;channel.last_on=last_on
         channel.visual_phase=visual_phases;channel.visual_initial=visual_initials
+        if channel.event_source is not None:
+            with channel.event_source.lock:
+                channel.event_source.notes=chord_notes
+                channel.event_source.rows.clear();channel.event_source.serial+=1
+                channel.event_source.known=True
         sf.active_notes=active;sf.note_rows=held;sf.played_rows=played;sf.visual_rows=visuals
         sf.release_channels=released;sf.available_presets=available
 
@@ -9961,7 +9987,8 @@ class NativeNoteKernel:
                 result['replay_stage']=2
             if stage<3:
                 if on:owner.midi_activity.note_on(channel,key,velocity,now=when)
-                else:owner.midi_activity.note_off(channel,key,now=when)
+                else:owner.midi_activity.note_off(channel,key,now=when,
+                    chord_release=not owner.midi_options.overnote_enabled or not count)
                 result['replay_stage']=3
             index+=1;result['replay_index']=index;result['replay_stage']=0
         for adapter,cursor in result.get('selection_source_ordinals',{}).items():adapter.commit_note_sources(cursor)

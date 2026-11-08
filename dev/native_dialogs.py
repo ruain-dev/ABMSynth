@@ -1417,6 +1417,7 @@ class NativePerformanceDialog(NativeDialog):
         self.owner, self.performance, self.commit = owner, performance, commit
         self.setModal(False)
         self.setWindowTitle(tr("channel_editor.title", number=1))
+        self.setProperty('supportTopic', 'channel')
         self.setWindowIcon(owner.windowIcon())
         self.setFont(owner.font())
         self.resize(640, 610)
@@ -4344,6 +4345,12 @@ class NativeLicensesDialog(NativeDialog):
     def open_website(self):
         if self._selected:QDesktopServices.openUrl(QUrl(self._selected['homepage']))
 
+    def reject(self):
+        if self.isWindow():
+            super().reject()
+        else:
+            self.window().close()
+
     def showEvent(self,event):
         if not getattr(self,'_fitted',False):
             # Text documents intentionally scroll. Keep a usable reading viewport
@@ -5200,6 +5207,17 @@ class NativeErrorReportPanel(QWidget):
         for button in (self.collect_button,self.save_button):
             button.setMinimumWidth(0);button.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);actions.addWidget(button,1)
         preview_body.addLayout(actions);self.description.textChanged.connect(self.invalidate)
+        from native_product_support import open_support_url, reveal_support_path
+        import product_support
+        handoff = control_row_layout()
+        self.reveal_button = make_action_button(tr('support.reveal_report'),
+            lambda: reveal_support_path(self, self._saved_report))
+        self.reveal_button.setEnabled(False)
+        self.submit_button = make_action_button(tr('support.submit_report'),
+            lambda: open_support_url(self, product_support.issue_link()))
+        handoff.addWidget(self.reveal_button, 1)
+        handoff.addWidget(self.submit_button, 1)
+        preview_body.addLayout(handoff)
 
     def _set_status(self,text):
         self.status.setText(text)
@@ -5265,7 +5283,10 @@ class NativeErrorReportPanel(QWidget):
         elif worker.operation=='collect':
             self.reviewed=worker.result;self.preview.setPlainText(self.reviewed)
             self._set_status('')
-        else:self._set_status(tr('error_report.saved',path=worker.result))
+        else:
+            self._saved_report = worker.result
+            self._set_status(tr('error_report.saved',path=worker.result))
+            self.reveal_button.setEnabled(True)
         self.save_button.setEnabled(bool(self.reviewed));worker.deleteLater()
 
 
@@ -5527,10 +5548,11 @@ class NativeEnginePreferencesDialog(NativeDialog):
             status=(tr('player.mapper_status_with_routing',status=status,routing=routing)
                     if report['state'] not in ('ready','absent') else routing)
         limited=report.get('routing_restriction') in ('unqualified','default_requires_legacy')
-        self.windows_midi_default.setEnabled(not limited)
+        recovery = bool(os.environ.get('ABMSYNTH_RECOVERY_PROFILE'))
+        self.windows_midi_default.setEnabled(not limited and not recovery)
         tooltip=('player.mapper_default_legacy' if limited else
                  'player.mapper_sdk_caveat_detail' if report.get('routing_restriction')=='sdk_port_numbers' else 'player.mapper_detail')
-        self.windows_midi_default.setToolTip(tr(tooltip))
+        self.windows_midi_default.setToolTip(tr('support.recovery_global' if recovery else tooltip))
         self.mapper_status.setText(status)
         actions={'Install':'player.mapper_install','Repair':'player.mapper_repair','Uninstall':'player.mapper_uninstall','Update':'player.mapper_update'}
         intended=report.get('requested_action',report['action'])
@@ -5650,7 +5672,12 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.start_minimized = OutlineCheckBox("")
         self.minimize_to_tray = OutlineCheckBox("")
         self.close_to_tray = OutlineCheckBox("")
+        self.check_updates_on_startup = OutlineCheckBox("")
         self.windows_midi_default = NativeToggleSwitch("")
+        if os.environ.get('ABMSYNTH_RECOVERY_PROFILE'):
+            for control in (self.windows_midi_default, self.startup_with_windows):
+                control.setEnabled(False)
+                control.setToolTip(tr('support.recovery_global'))
         self.main_log_level=AnimatedComboBox()
         for level in ('info','warning','error'):
             self.main_log_level.addItem(tr('preferences.main_log_level_'+level),level)
@@ -5658,6 +5685,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         for detail in ('changes','summary','detailed'):
             self.main_log_detail.addItem(tr('preferences.main_log_detail_'+detail),detail)
         self._controls = {
+            'check_updates_on_startup':(self.check_updates_on_startup,'check_updates_on_startup','check_updates_on_startup_detail'),
             'main_log_level':(self.main_log_level,'main_log_level','main_log_level_detail'),
             'main_log_detail':(self.main_log_detail,'main_log_detail','main_log_detail_help'),
             "windows_midi_default": (self.windows_midi_default, "windows_midi_default", "windows_midi_default_detail"),
@@ -5730,8 +5758,8 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.color_theme.setCurrentIndex(self.color_theme.findData(owner._color_theme))
         self.color_theme.currentIndexChanged.connect(self._preview_color_theme)
         self.program_card = self._settings_card('preferences.general_title',
-            ('startup_with_windows','minimize_to_tray','start_minimized','close_to_tray'),
-            columns=(('startup_with_windows','minimize_to_tray'),('start_minimized','close_to_tray')))
+            ('startup_with_windows','minimize_to_tray','check_updates_on_startup','start_minimized','close_to_tray'),
+            columns=(('startup_with_windows','minimize_to_tray','check_updates_on_startup'),('start_minimized','close_to_tray')))
         program_body.addWidget(self.program_card)
         general_grid=self.program_card.layout()
         self.program_card._form_start_row=2
@@ -5820,6 +5848,10 @@ class NativeEnginePreferencesDialog(NativeDialog):
         recording_body.addStretch(1)
         self.midi_input_scroll,midi_body=self._tab_page('preferences.tab_midi_input')
         program_body.addWidget(mapper_card)
+        from native_product_support import NativeMaintenancePanel
+        self.maintenance = NativeMaintenancePanel(owner, self)
+        program_body.addWidget(self.maintenance)
+        self.setProperty('supportTopic', 'preferences')
         program_body.addStretch(1)
         self.midi_policy_card=self._settings_card('preferences.midi_policy_title',
             ('midi_async','auto_reset_delay_s','cc6_direct_pitch_range','cc94_custom_delay_send'),
@@ -6359,6 +6391,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.start_minimized.setChecked(values.start_minimized)
         self.minimize_to_tray.setChecked(values.minimize_to_tray)
         self.close_to_tray.setChecked(values.close_to_tray)
+        self.check_updates_on_startup.setChecked(values.check_updates_on_startup)
         self.windows_midi_default.setChecked(values.windows_midi_default)
         self.main_log_level.setCurrentIndex(self.main_log_level.findData(values.main_log_level))
         self.main_log_detail.setCurrentIndex(self.main_log_detail.findData(values.main_log_detail))
@@ -6414,6 +6447,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
 
     def _values(self) -> EnginePreferences:
         return EnginePreferences(
+            check_updates_on_startup=self.check_updates_on_startup.isChecked(),
             main_log_level=str(self.main_log_level.currentData()),
             main_log_detail=str(self.main_log_detail.currentData()),
             sample_rate=int(self.sample_rate.currentData()),
@@ -6493,6 +6527,9 @@ class NativeEnginePreferencesDialog(NativeDialog):
         return True
 
     def done(self, result):
+        if self.maintenance.worker is not None:
+            self.maintenance.status.setText(tr('support.busy_close'))
+            return
         if self.error_report.busy:
             self.error_report.status.setText(tr('error_report.busy_close'))
             return
@@ -6553,18 +6590,19 @@ class NativeEnginePreferencesDialog(NativeDialog):
         if not self._preview_live():
             return
         old_startup = is_windows_startup_enabled()
+        recovery = bool(os.environ.get('ABMSYNTH_RECOVERY_PROFILE'))
         try:
-            if old_startup != values.startup_with_windows:
+            if not recovery and old_startup != values.startup_with_windows:
                 set_windows_startup_enabled(values.startup_with_windows)
             engine_values=engine_ini_values(values)
             self.owner._settings_writer.submit({'Engine':engine_values,'MIDI Ports':{'Configuration':port_settings.serialized()}},
                 owned_keys={'Engine':set(engine_values),'MIDI Ports':{'Configuration'}})
             self.owner._settings_writer.flush()  # Explicit Save: durable before close/restart.
-            if not os.environ.get("ABMSYNTH_UI_ONLY"):
+            if not recovery and not os.environ.get("ABMSYNTH_UI_ONLY"):
                 from windows_integration import set_midi_mapper_enabled
                 set_midi_mapper_enabled(values.windows_midi_default)
         except (OSError, ValueError) as exc:
-            if old_startup != values.startup_with_windows:
+            if not recovery and old_startup != values.startup_with_windows:
                 try:
                     set_windows_startup_enabled(old_startup)
                 except OSError:
@@ -7748,6 +7786,10 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         return "save" if chosen is save else "discard" if chosen is discard else "cancel"
 
     def _save_group(self, *, close):
+        files = getattr(self, '_files_dialog', None)
+        if files is not None and files.worker is not None:
+            files.status.setText(tr('support.busy_close'))
+            return False
         if not self._settle_group_controls():return False
         candidate = self.owner.soundfont_runtime.copy_group(self.group)
         if candidate.performance is None:
@@ -7784,6 +7826,10 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
 
     def close_preserving_runtime(self):
         """Keep already sounding edits for this run without writing a file."""
+        files = getattr(self, '_files_dialog', None)
+        if files is not None and files.worker is not None:
+            files.status.setText(tr('support.busy_close'))
+            return
         if not self._settle_group_controls():return
         creator = getattr(self, 'instrument_creator', None)
         if creator is not None and not creator.can_close(self.close_preserving_runtime):
@@ -7792,6 +7838,20 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         if self.group != self._saved_group:
             self.owner.mark_unsaved_group()
         QDialog.accept(self)
+
+    def open_group_files(self):
+        from native_product_support import NativeGroupFilesDialog
+        files = getattr(self, '_files_dialog', None)
+        if files is not None and files.worker is not None:
+            files.show()
+            files.raise_()
+            return
+        if not self._settle_group_controls():
+            return
+        if files is not None:
+            files.deleteLater()
+        self._files_dialog = NativeGroupFilesDialog(self)
+        self._files_dialog.show()
 
     def _populate_instrument_rows(self):
         self._instrument_profile_base = (dict(self.group.performance) if self.group.performance is not None
@@ -8599,6 +8659,7 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         self._instrument_auto_fitting = False
         self._routing_font_signature = None
         self.setWindowTitle(tr("group.window_title"))
+        self.setProperty('supportTopic', 'group')
         self.resize(1080, 720)
         self.setMinimumSize(0, 0)
         self.setSizeGripEnabled(True)
@@ -8622,6 +8683,7 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         self.export_button.setMenu(export_menu)
         header.addSpacing(METRICS["compact_content_gap"])
         header.addWidget(self.export_button)
+        header.addWidget(make_action_button(tr('support.group_files'), self.open_group_files))
         header.addStretch(1)
         header.addWidget(make_action_button(tr("action.new_group"), self.new_group))
         root.addLayout(header)

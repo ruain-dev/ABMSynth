@@ -4823,7 +4823,7 @@ struct NativeMidiActivity {
     using U64=unsigned long long;
     static constexpr U64 absent=~0ull;
     struct Run {unsigned address;U64 count,ordinal;};
-    struct Key {U64 activity=0,overlap=0;std::vector<Run> runs;size_t head=0;};
+    struct Key {U64 activity=0,overlap=0;std::vector<Run> runs;size_t head=0;bool chordActive=false;};
     struct Channel {std::array<Key,256> keys;U64 activity=0,overlap=0,qpc=0,phase=0;double initial=0;unsigned velocity=0;};
     struct Preset {unsigned address;U64 active=0,visual=absent,phase=0;double initial=0;unsigned release=~0u;bool played=false;};
     SRWLOCK lock=SRWLOCK_INIT;std::atomic<unsigned> references{1};
@@ -4892,7 +4892,7 @@ struct NativeMidiActivity {
         if(contains(result))return true;result=program<<16;return contains(result);
     }
     void eraseVisual(Preset& row){row.visual=absent;row.phase=0;row.initial=0;row.release=~0u;}
-    void clearActive(){for(auto& state:channels){for(auto& key:state.keys){key.activity=0;key.overlap=0;key.runs.clear();key.head=0;}
+    void clearActive(){for(auto& state:channels){for(auto& key:state.keys){key.activity=0;key.overlap=0;key.runs.clear();key.head=0;key.chordActive=false;}
         state.activity=0;state.overlap=0;state.velocity=0;state.qpc=0;state.phase=0;state.initial=0;}
         for(auto& row:presets){row.active=0;eraseVisual(row);}chordAction(0x78b0u,~0u,0);commit();}
     void clearChannel(unsigned channel,U64 qpc,bool clearOverlap){
@@ -4904,13 +4904,13 @@ struct NativeMidiActivity {
                     if(remaining){const double initial=strength(row,qpc);row.visual=remaining;row.phase=qpc;row.initial=initial;}
                     else eraseVisual(row);}
             }
-            key.runs.clear();key.head=0;key.activity=0;if(clearOverlap)key.overlap=0;
+            key.runs.clear();key.head=0;key.activity=0;key.chordActive=false;if(clearOverlap)key.overlap=0;
         }
         for(auto& row:presets)if(row.release==channel)eraseVisual(row);
         state.activity=0;state.velocity=0;state.qpc=0;state.phase=0;state.initial=0;if(clearOverlap)state.overlap=0;
         chordAction(0x78b0u,channel,qpc);
     }
-    bool action(unsigned packed,unsigned channel,U64 overlap,U64 qpc,bool known,unsigned bank,unsigned program){
+    bool action(unsigned packed,unsigned channel,U64 overlap,U64 qpc,bool known,unsigned bank,unsigned program,bool preserveOverlap=false){
         if(channel>=channels.size()||packed>0xffffffu||bank>65535u||program>65535u||revision==absent)return false;
         const unsigned status=packed&240u,key=(packed>>8)&255u,velocity=(packed>>16)&255u;
         if(status==0xb0u){
@@ -4960,7 +4960,15 @@ struct NativeMidiActivity {
                 }
             }
         }
-        note.overlap=overlap;state.overlap=otherOverlap+overlap;chordAction(packed,channel,qpc);commit();return true;
+        // BASS_MIDI_NOTEOFF1 is not used by ABMSynth. A forwarded Off releases
+        // every instance of this channel/key. Physical activity/FIFO counts
+        // retain their own contract, while chord observation follows that
+        // effective gate. Overlap correction suppresses Off until count=0.
+        if(on)note.chordActive=key<128;
+        else if(!preserveOverlap||!overlap)note.chordActive=false;
+        note.overlap=overlap;state.overlap=otherOverlap+overlap;
+        if(on||!preserveOverlap||!overlap)chordAction(packed,channel,qpc);
+        commit();return true;
     }
     U64 fifoSize()const{U64 result=0;for(const auto& channel:channels)for(const auto& key:channel.keys)
         result+=static_cast<U64>(key.runs.size()-key.head);return result;}
@@ -4987,7 +4995,7 @@ extern "C" __declspec(dllexport) int __cdecl native_activity_clear(void* pointer
     AcquireSRWLockExclusive(&s.lock);if(s.attachedOwner||s.revision==NativeMidiActivity::absent){ReleaseSRWLockExclusive(&s.lock);return 0;}
     if(kind==1&&channel!=~0u)s.clearChannel(channel,qpc,true);
     else{
-        if(kind!=2){for(auto& state:s.channels){for(auto& key:state.keys){key.activity=0;key.overlap=0;key.runs.clear();key.head=0;}
+        if(kind!=2){for(auto& state:s.channels){for(auto& key:state.keys){key.activity=0;key.overlap=0;key.runs.clear();key.head=0;key.chordActive=false;}
             state.activity=0;state.overlap=0;state.velocity=0;state.qpc=0;state.phase=0;state.initial=0;}
             for(auto& row:s.presets){row.active=0;s.eraseVisual(row);}}
         if(kind!=2)s.chordAction(0x78b0u,~0u,qpc);
@@ -5067,7 +5075,10 @@ extern "C" __declspec(dllexport) unsigned __cdecl native_activity_channel_visual
 extern "C" __declspec(dllexport) unsigned __cdecl native_activity_transfer_header_v2(void* pointer,unsigned long long* out,unsigned capacity){
     const auto count=native_activity_transfer_header(pointer,out,capacity);if(count==9)out[8]=2;return count;
 }
-static int activityTransferCopy(bool extended,void* pointer,unsigned long long revision,
+extern "C" __declspec(dllexport) unsigned __cdecl native_activity_transfer_header_v3(void* pointer,unsigned long long* out,unsigned capacity){
+    const auto count=native_activity_transfer_header(pointer,out,capacity);if(count==9)out[8]=3;return count;
+}
+static int activityTransferCopy(unsigned version,void* pointer,unsigned long long revision,
         unsigned long long* channels,unsigned channelCapacity,unsigned long long* presets,unsigned presetCapacity,
         unsigned long long* fifo,unsigned fifoCapacity,unsigned long long* counts,unsigned countCapacity,
         unsigned* available,unsigned availableCapacity){
@@ -5079,10 +5090,11 @@ static int activityTransferCopy(bool extended,void* pointer,unsigned long long r
             (!presets&&!s.presets.empty())||(!fifo&&fifoCount)||(!available&&!s.available.empty())){
         ReleaseSRWLockShared(&s.lock);return 0;}
     for(size_t ch=0;ch<s.channels.size();++ch){const auto& channel=s.channels[ch];
-        const auto values=NativeMidiActivity::channelValues(channel);const size_t stride=extended?6:4;
+        const auto values=NativeMidiActivity::channelValues(channel);const size_t stride=version>=2?6:4;
         std::copy_n(values.data(),stride,channels+ch*stride);
         for(unsigned key=0;key<256;++key){const auto& row=channel.keys[key];
-            const unsigned long long cells[]{static_cast<unsigned long long>(ch),key,row.activity,row.overlap};std::copy_n(cells,4,counts+(ch*256+key)*4);}}
+            const unsigned long long cells[]{static_cast<unsigned long long>(ch),key,row.activity,row.overlap,row.chordActive?1ull:0ull};
+            const size_t countStride=version>=3?5:4;std::copy_n(cells,countStride,counts+(ch*256+key)*countStride);}}
     for(size_t i=0;i<s.presets.size();++i){const auto values=NativeMidiActivity::presetValues(s.presets[i]);std::copy_n(values.data(),7,presets+i*7);}
     size_t index=0;for(size_t ch=0;ch<s.channels.size();++ch)for(unsigned key=0;key<256;++key){const auto& note=s.channels[ch].keys[key];
         for(size_t i=note.head;i<note.runs.size();++i){const auto& row=note.runs[i];const unsigned long long values[]{
@@ -5092,16 +5104,19 @@ static int activityTransferCopy(bool extended,void* pointer,unsigned long long r
 }
 extern "C" __declspec(dllexport) int __cdecl native_activity_transfer_copy(void* p,unsigned long long r,
         unsigned long long* c,unsigned nc,unsigned long long* s,unsigned ns,unsigned long long* f,unsigned nf,
-        unsigned long long* k,unsigned nk,unsigned* a,unsigned na){return activityTransferCopy(false,p,r,c,nc,s,ns,f,nf,k,nk,a,na);}
+        unsigned long long* k,unsigned nk,unsigned* a,unsigned na){return activityTransferCopy(1,p,r,c,nc,s,ns,f,nf,k,nk,a,na);}
 extern "C" __declspec(dllexport) int __cdecl native_activity_transfer_copy_v2(void* p,unsigned long long r,
         unsigned long long* c,unsigned nc,unsigned long long* s,unsigned ns,unsigned long long* f,unsigned nf,
-        unsigned long long* k,unsigned nk,unsigned* a,unsigned na){return activityTransferCopy(true,p,r,c,nc,s,ns,f,nf,k,nk,a,na);}
+        unsigned long long* k,unsigned nk,unsigned* a,unsigned na){return activityTransferCopy(2,p,r,c,nc,s,ns,f,nf,k,nk,a,na);}
+extern "C" __declspec(dllexport) int __cdecl native_activity_transfer_copy_v3(void* p,unsigned long long r,
+        unsigned long long* c,unsigned nc,unsigned long long* s,unsigned ns,unsigned long long* f,unsigned nf,
+        unsigned long long* k,unsigned nk,unsigned* a,unsigned na){return activityTransferCopy(3,p,r,c,nc,s,ns,f,nf,k,nk,a,na);}
 static std::unique_ptr<NativeMidiActivity> activityTransferStage(const unsigned long long* header,unsigned headerCount,
         const unsigned long long* channels,unsigned channelCount,const unsigned long long* presets,unsigned presetCount,
         const unsigned long long* fifo,unsigned fifoCount,const unsigned long long* counts,unsigned countCount,
         const unsigned* available,unsigned availableCount){
     using State=NativeMidiActivity;using U64=State::U64;
-    if(!header||headerCount!=9||(header[8]!=1&&header[8]!=2)||!channelCount||channelCount>128||header[1]!=channelCount||
+    if(!header||headerCount!=9||(header[8]!=1&&header[8]!=2&&header[8]!=3)||!channelCount||channelCount>128||header[1]!=channelCount||
             header[2]!=presetCount||header[3]!=fifoCount||header[4]>1||header[6]!=availableCount||
             (!header[4]&&availableCount)||!channels||!counts||
             countCount!=channelCount*256||(!presets&&presetCount)||(!fifo&&fifoCount)||(!available&&availableCount))return nullptr;
@@ -5121,12 +5136,14 @@ static std::unique_ptr<NativeMidiActivity> activityTransferStage(const unsigned 
                     (p[3]==State::absent&&(p[4]||initial||p[6]!=State::absent)))return nullptr;
             State::Preset row{static_cast<unsigned>(p[0])};row.active=p[1];row.played=p[2]!=0;row.visual=p[3];row.phase=p[4];
             row.initial=initial;row.release=p[6]==State::absent?~0u:static_cast<unsigned>(p[6]);staged->presets.push_back(row);}
-        for(unsigned ch=0;ch<channelCount;++ch){auto& c=staged->channels[ch];const auto* p=channels+ch*(header[8]==2?6:4);
+        for(unsigned ch=0;ch<channelCount;++ch){auto& c=staged->channels[ch];const auto* p=channels+ch*(header[8]>=2?6:4);
             if(p[1]>255)return nullptr;c.velocity=static_cast<unsigned>(p[1]);c.qpc=p[2];
-            if(header[8]==2){double initial=0;std::memcpy(&initial,p+5,sizeof(initial));
+            if(header[8]>=2){double initial=0;std::memcpy(&initial,p+5,sizeof(initial));
                 if(!std::isfinite(initial)||initial<0||initial>100)return nullptr;c.phase=p[4];c.initial=initial;}
-            for(unsigned key=0;key<256;++key){const auto* cell=counts+(static_cast<size_t>(ch)*256+key)*4;
+            for(unsigned key=0;key<256;++key){const auto* cell=counts+(static_cast<size_t>(ch)*256+key)*(header[8]>=3?5:4);
                 if(cell[0]!=ch||cell[1]!=key||cell[2]>State::absent-c.activity||cell[3]>State::absent-c.overlap)return nullptr;
+                if(header[8]>=3&&(cell[4]>1||(cell[4]&&(!cell[2]||key>=128))))return nullptr;
+                c.keys[key].chordActive=header[8]>=3?cell[4]!=0:cell[2]!=0&&key<128;
                 c.keys[key].activity=cell[2];c.keys[key].overlap=cell[3];c.activity+=cell[2];c.overlap+=cell[3];}
             if(c.activity!=p[0]||c.overlap!=p[3])return nullptr;}
         std::vector<U64> sums(presetCount,0),keySums(countCount,0);
@@ -5170,7 +5187,7 @@ extern "C" __declspec(dllexport) int __cdecl native_activity_transfer_import(voi
 // ABI1 chord rows are four uint64 fields: serial/packed/channel/QPC.
 // Atomic copy of bounded history and current logical counts. A busy writer
 // returns -1; observation retries without changing MIDI or audio ownership.
-extern "C" __declspec(dllexport) unsigned __cdecl native_activity_chord_version(){return 1;}
+extern "C" __declspec(dllexport) unsigned __cdecl native_activity_chord_version(){return 2;}
 extern "C" __declspec(dllexport) int __cdecl native_activity_chord_copy(void* pointer,unsigned long long cursor,
         unsigned long long* header,unsigned headerCapacity,unsigned long long* rows,unsigned rowCapacity,
         unsigned long long* counts,unsigned countCapacity){
@@ -5187,7 +5204,7 @@ extern "C" __declspec(dllexport) int __cdecl native_activity_chord_copy(void* po
         auto* out=rows+copied*4;out[0]=row.serial;out[1]=row.packed;out[2]=row.channel;out[3]=row.qpc;++copied;
     }
     for(size_t ch=0;ch<s.channels.size();++ch)for(unsigned key=0;key<128;++key)
-        counts[ch*128+key]=s.channels[ch].keys[key].activity;
+        counts[ch*128+key]=s.channels[ch].keys[key].chordActive?1:0;
     header[0]=serial;header[1]=complete?1:0;header[2]=s.validity.load(std::memory_order_relaxed)&1;
     header[3]=s.frequency;header[4]=copied;header[5]=s.channels.size();
     ReleaseSRWLockShared(&s.lock);return 1;
@@ -5428,7 +5445,7 @@ struct MidiNoteKernel {
     bool observeActivity(const MidiNoteAction& action,const NativeActivityIdentity& source){
         if(!activity)return true;auto& state=*activity;AcquireSRWLockExclusive(&state.lock);
         const bool valid=state.reservationThread==GetCurrentThreadId()&&state.attachedOwner==this&&!activityDirty;
-        const bool ok=valid&&state.action(action.packed,action.channel,action.count,action.qpc,source.known,source.bank,source.program);
+        const bool ok=valid&&state.action(action.packed,action.channel,action.count,action.qpc,source.known,source.bank,source.program,overlap);
         if(ok){++activityFrameActions;if((action.packed&0xf0u)==0xb0u)++activityClears;else ++activityNotes;}
         else{activityDirty=true;state.shadowDirty=true;state.qualify(false);++activityRefusals;}ReleaseSRWLockExclusive(&state.lock);return ok;
     }

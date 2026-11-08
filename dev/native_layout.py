@@ -335,7 +335,7 @@ def install_three_column_form_row(
     """
     layout = set_layout(QGridLayout(host), (0, 0, 0, 0), gap)
     layout.setColumnStretch(1, 1)
-    label = ElasticLabel(caption, preferred_width=label_width)
+    label = FormCaptionLabel(caption, preferred_width=label_width)
     label.setObjectName("FieldLabel")
     label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     make_horizontally_elastic(field)
@@ -385,6 +385,22 @@ class ElasticLabel(QLabel):
 
     def minimumSizeHint(self):
         return QSize(0, 0)
+
+
+class FormCaptionLabel(ElasticLabel):
+    """Form captions fit their current text before the flexible field grows.
+
+    The common column hint remains the normal baseline. Longer captions use
+    their actual styled font's ink width, without creating a minimum width.
+    QLabel invalidates its layout hint on font/text/style changes.
+    """
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        metrics = self.fontMetrics()
+        natural = max((max(metrics.horizontalAdvance(line), metrics.boundingRect(line).width())
+                       for line in self.text().splitlines()), default=0)
+        return QSize(max(hint.width(), natural + 2), hint.height())
 
 
 def align_form_labels(labels, preferred_width, gap=0):

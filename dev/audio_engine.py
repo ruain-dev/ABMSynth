@@ -167,7 +167,7 @@ def _chord_excluded_channels(owner,channels,streams,stream):
 def get_midi_chord_notes(*,synthesis_streams=()):
     """Processed MIDI held keys,not acoustic pitches/release voices.
 
-    Reuse canonical activity counts. Direct BASS NOTE|(key<<16) collides
+    Reuse canonical effective key gates. Direct BASS NOTE|(key<<16) collides
     with TRANSPOSE/VOICES for keys1/2 in the installed library. Activity
     covers all128keys and direct/native/file input with existing clear paths.
     Exclude drums,mutes and classified unpitched/effect sources;use the actual
@@ -180,12 +180,13 @@ def get_midi_chord_notes(*,synthesis_streams=()):
     channels=tuple(owner.addresses.channels())
     native=owner.native_activity
     if native is not None:
-        notes=native.pressed_notes(channels)
-        if notes is None:return None
+        batch=native.chord_events(0)
+        if batch is None or not batch.known:return None
+        notes=tuple(address for address,count in batch.notes if count and address[0] in channels)
     else:
-        with owner.midi_activity.lock:
-            notes=tuple((channel,key) for channel in channels
-                for key,count in owner.midi_activity.notes[channel].items() if count and 0<=key<128)
+        batch=owner.chord_events.snapshot(0)
+        if not batch.known:return None
+        notes=tuple(address for address,count in batch.notes if count and address[0] in channels)
     channels={channel for channel,_key in notes}
     excluded=_chord_excluded_channels(owner,channels,streams,stream)
     if excluded is None:return None
@@ -2000,7 +2001,7 @@ def _midi_payload_steps(owner,original,port,trace_packet_id,received_stamp,recei
             suppress_note_off = owner.midi_options.note_off(channel, data1)
             observed_at=time.monotonic()
             _soundfont_group_note_off(channel, data1,now=observed_at)
-            owner.midi_activity.note_off(channel, data1,now=observed_at)
+            owner.midi_activity.note_off(channel, data1,now=observed_at,chord_release=not suppress_note_off)
             if not suppress_note_off:
                 out.extend(original[i:i + 3])
             i += 3

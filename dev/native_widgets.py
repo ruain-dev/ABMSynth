@@ -32,23 +32,23 @@ from pathlib import Path
 import numpy as np
 from numpy import fft as _visual_fft  # Initialization precedes live audio cadence.
 from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QEasingCurve, QItemSelectionModel, QLibraryInfo, QLocale, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, QPropertyAnimation, QTranslator, QVariantAnimation, Property, Qt, QTimer, Signal, QMetaObject, Q_ARG, QThread
-from PySide6.QtGui import QAccessible, QAccessibleEvent, QAccessibleActionInterface, QAccessibleValueInterface, QAccessibleValueChangeEvent, QColor, QContextMenuEvent, QCursor, QDoubleValidator, QDrag, QFont, QFontDatabase, QFontMetrics, QFontMetricsF, QIcon, QIconEngine, QImage, QIntValidator, QPainter, QPainterPath, QPalette, QPen, QPicture, QPixmap, QPolygonF, QStyleHints
+from PySide6.QtGui import QAccessible, QAccessibleEvent, QAccessibleActionInterface, QAccessibleValueInterface, QAccessibleValueChangeEvent, QColor, QContextMenuEvent, QCursor, QDoubleValidator, QDrag, QFont, QFontDatabase, QFontMetrics, QFontMetricsF, QIcon, QIconEngine, QImage, QIntValidator, QPainter, QPainterPath, QPalette, QPen, QPicture, QPixmap, QPolygonF, QRegion, QStyleHints
 from PySide6.QtWidgets import (
-    QAbstractButton,
+    QAbstractButton, QAbstractScrollArea,
     QApplication, QAccessibleWidget, QAbstractItemView, QAbstractSpinBox, QAbstractSlider, QButtonGroup, QCheckBox, QComboBox, QFrame, QHeaderView,
-    QDial, QDialog, QDialogButtonBox, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton,
-    QSizePolicy, QSlider, QSpinBox, QDoubleSpinBox, QVBoxLayout, QLayout, QTabBar, QTabWidget,
+    QDial, QDialog, QDialogButtonBox, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QMenu, QPushButton, QRadioButton,
+    QSizePolicy, QSlider, QSpinBox, QDoubleSpinBox, QVBoxLayout, QLayout, QTabBar, QTabWidget, QStackedWidget,
     QStyle, QStylePainter, QStyledItemDelegate, QStyleOption, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider, QStyleOptionTab,
-    QStyleOptionViewItem, QToolButton, QToolTip, QWidget, QMessageBox,
+    QStyleOptionViewItem, QStyleOptionTabWidgetFrame, QToolButton, QToolTip, QWidget, QMessageBox,
 )
 from effect_presentation import (effect_tooltip, format_effect_value, numeric_entry_domain, knob_input_steps,
     audio_fx_visual_plot, audio_fx_visual_edit, audio_fx_parameter_caption, audio_fx_parameter_value)
 from event_log import log_text
 from i18n import DEFAULT_LOCALE, active_locale, load_catalog, tr
 from windows_integration import ui_animations_enabled
-from native_layout import CARD_GAP, CARD_ROW_GAPS, FORM_ROW_HEIGHT, FORM_COLUMN_GAP, COMPACT_CONTENT_GAP, TAB_PAGE_INSET, COMPACT_TAB_PAGE_INSET, ElasticLabel, ElasticPanel, install_three_column_form_row, fit_plain_dialog_contents, invalidate_layout_chain, set_layout, automatic_window_fit_allowed
+from native_layout import CARD_GAP, INNER_CARD_GAP, CARD_ROW_GAPS, FORM_ROW_HEIGHT, FORM_COLUMN_GAP, COMPACT_CONTENT_GAP, TAB_PAGE_INSET, COMPACT_TAB_PAGE_INSET, WrappingControlLayout, ElasticLabel, ElasticPanel, bind_field_enabled, install_three_column_form_row, fit_plain_dialog_contents, invalidate_layout_chain, set_layout, automatic_window_fit_allowed
 from soundfont_files import DEFAULT_SCAN_BUDGET
-from audio_output import PlaybackLampPulse
+from audio_output import PlaybackLampPulse, PlaybackWarningEvidence
 
 MIDI_ACTIVITY_INTERVAL_MS = 10
 
@@ -61,6 +61,7 @@ class NativePalette:
     input: str
     border: str
     border_subtle: str
+    choice_outline: str
     text: str
     label: str
     muted: str
@@ -82,11 +83,12 @@ class NativePalette:
     meter_danger: str
     selection: str = "#0f6cbd"
     primary_text: str = "#ffffff"
+    accent_ink: str = ""
 
 
 LIGHT = NativePalette(
     window="#f4f6f8", surface="#ffffff", surface_alt="#edf1f5",
-    input="#f8fafc", border="#d7dde5", border_subtle="#e7ebf0",
+    input="#f8fafc", border="#d7dde5", border_subtle="#e7ebf0", choice_outline="#7d8793",
     text="#242424", label="#424242", muted="#505a66", accent="#086bd8", accent_hover="#0759b3",
     accent_soft="#d7e7f9", interaction_hover="#e4effb", success="#15803d", warning="#b7791f", danger="#c2413b",
     meter_lane="#93abc0", meter_grid="#60768b",
@@ -96,7 +98,7 @@ LIGHT = NativePalette(
 )
 DARK = NativePalette(
     window="#171a1f", surface="#20242b", surface_alt="#292f38",
-    input="#1b2027", border="#39414c", border_subtle="#2c333d",
+    input="#1b2027", border="#39414c", border_subtle="#2c333d", choice_outline="#788392",
     text="#f5f5f5", label="#d6d6d6", muted="#b6c0cb", accent="#3297ff", accent_hover="#55a9ff",
     accent_soft="#264b73", interaction_hover="#243e5c", success="#4ade80", warning="#f4c75e", danger="#fb7770",
     meter_lane="#3b5062", meter_grid="#91a5b8",
@@ -106,13 +108,108 @@ DARK = NativePalette(
 )
 
 
-# Names are locale identities; hue is independent of Light/Dark mode.
-COLOR_THEMES = {
-    "blue": ("#086bd8", "#3297ff"), "teal": ("#007f87", "#00c9c7"),
-    "green": ("#14813c", "#3ddc84"), "purple": ("#7c3bc4", "#b178ff"),
-    "rose": ("#c12658", "#ff699e"), "amber": ("#906000", "#ffc12e"),
+def _oklch_colour(lightness, chroma, hue):
+    """OKLCH/D65 to sRGB, reducing chroma at constant hue/lightness to fit.
+
+    Oklab inverse matrices follow Ottosson's published reference conversion.
+    Palette construction is cached; this does not run in widget paint paths.
+    """
+    angle = math.radians(hue)
+
+    def linear_rgb(amount):
+        a, b = amount * math.cos(angle), amount * math.sin(angle)
+        l = (lightness + .3963377774*a + .2158037573*b)**3
+        m = (lightness - .1055613458*a - .0638541728*b)**3
+        s = (lightness - .0894841775*a - 1.2914855480*b)**3
+        return (4.0767416621*l - 3.3077115913*m + .2309699292*s,
+                -1.2684380046*l + 2.6097574011*m - .3413193965*s,
+                -.0041960863*l - .7034186147*m + 1.7076147010*s)
+
+    rgb = linear_rgb(chroma)
+    if min(rgb) < 0 or max(rgb) > 1:
+        lower, upper = 0., chroma
+        for _ in range(20):
+            candidate = (lower + upper) / 2
+            values = linear_rgb(candidate)
+            if min(values) >= 0 and max(values) <= 1:
+                lower = candidate
+            else:
+                upper = candidate
+        rgb = linear_rgb(lower)
+    encoded = (12.92*v if v <= .0031308 else 1.055*v**(1/2.4)-.055 for v in rgb)
+    return QColor.fromRgbF(*(max(0., min(1., value)) for value in encoded)).name()
+
+
+# Hue-specific gamut-relative anchors. Uniform absolute L/C clipped teal,
+# cyan and warm accents heavily. These coordinates retain the blue reference's
+# relative cusp position and chroma occupancy. Blue itself stays exact.
+_COLOR_THEME_HUES = {'blue':255, 'teal':185, 'green':145, 'purple':300,
+    'rose':8, 'amber':75, 'cyan':220, 'indigo':275, 'magenta':335,
+    'coral':35, 'orange':55, 'lime':125}
+_COLOR_THEME_ACCENTS = {
+    185: ((.79938276,.13784803),(.90743901,.14327604)),
+    145: ((.77269841,.23781691),(.87990386,.24468648)),
+    300: ((.54,.28207413),(.61,.25085984)),
+    8: ((.56957567,.22321117),(.67025113,.22693582)),
+    75: ((.71798247,.14821971),(.82342035,.15467384)),
+    220: ((.71334970,.12710439),(.81863989,.13328199)),
+    275: ((.54,.25167041),(.60,.21860551)),
+    335: ((.60927730,.26514775),(.71123420,.27101003)),
+    35: ((.58523496,.20089961),(.68640867,.20537289)),
+    55: ((.65708311,.15921475),(.76057182,.16461799)),
+    125: ((.82248964,.20227948),(.93128188,.20677191)),
 }
-_COLOR_PALETTES = {}
+
+# Measured from the canonical Dark blue state fills, in OKLCH L/C.
+_DARK_INTERACTION_TONES = {
+    'accent_soft': (.4054689940, .0800253974),
+    'interaction_hover': (.3578261372, .0615226604),
+    'selection': (.4439518889, .1117847519),
+}
+
+
+def _colour_contrast(first, second):
+    def luminance(colour):
+        return sum(weight*(value/12.92 if value<=.04045 else ((value+.055)/1.055)**2.4)
+                   for weight,value in zip((.2126,.7152,.0722),QColor(colour).getRgbF()[:3]))
+    lower,upper=sorted((luminance(first),luminance(second)))
+    return (upper+.05)/(lower+.05)
+
+
+def _theme_palette(base, hue, dark):
+    tone = lambda lightness, chroma: _oklch_colour(lightness, chroma, hue)
+    blue=hue==_COLOR_THEME_HUES['blue']
+    if blue:
+        accent,hover=base.accent,base.accent_hover
+        ink='#171a1f' if dark else '#ffffff'
+    else:
+        lightness,chroma=_COLOR_THEME_ACCENTS[hue][int(dark)]
+        accent=tone(lightness,chroma)
+        ink=max(('#000000','#ffffff'),key=lambda colour:_colour_contrast(colour,accent))
+        hover=tone(lightness+(.025 if ink!='#ffffff' else -.025),chroma)
+    if blue:
+        selected_fill,hover_fill,selection=base.accent_soft,base.interaction_hover,base.selection
+    elif dark:
+        selected_fill=tone(*_DARK_INTERACTION_TONES['accent_soft'])
+        hover_fill=tone(*_DARK_INTERACTION_TONES['interaction_hover'])
+        selection=tone(*_DARK_INTERACTION_TONES['selection'])
+    else:
+        selected_fill=tone(.91,.055)
+        hover_fill=tone(.96,.032)
+        selection=tone(.43,.12)
+    return replace(base, accent=accent, accent_hover=hover,
+        accent_ink=tone(.80 if dark else .48,.18),
+        accent_soft=selected_fill, interaction_hover=hover_fill,
+        selection=selection, primary_text=ink)
+
+
+LIGHT = _theme_palette(LIGHT, _COLOR_THEME_HUES['blue'], False)
+DARK = _theme_palette(DARK, _COLOR_THEME_HUES['blue'], True)
+_COLOR_PALETTES = {(dark,name): (DARK if dark else LIGHT) if name=='blue'
+    else _theme_palette(DARK if dark else LIGHT,hue,dark)
+    for dark in (False,True) for name,hue in _COLOR_THEME_HUES.items()}
+COLOR_THEMES = {name: (_COLOR_PALETTES[False,name].accent,
+                      _COLOR_PALETTES[True,name].accent) for name in _COLOR_THEME_HUES}
 
 
 def _blend_colour(first, second, amount):
@@ -135,13 +232,13 @@ def command_state_colors(palette, *, role='normal', enabled=True, hovered=False,
     if not enabled:return p.surface_alt,p.border_subtle,disabled_control_color(p)
     if role=='flat':
         return (p.accent_soft if pressed or checked else p.interaction_hover if hovered else None,
-                p.accent,p.accent if checked else p.text)
+                p.accent,p.accent_ink if checked else p.text)
     if role=='primary':
         if pressed:return p.accent_soft,p.accent,p.text
         return (p.accent_hover if hovered else p.accent,
                 p.accent_hover if hovered else p.accent,p.primary_text)
     if checked:
-        return p.accent_soft,p.accent_hover if hovered else p.accent,p.accent_hover if QColor(p.window).lightness()>128 else p.accent
+        return p.accent_soft,p.accent_hover if hovered else p.accent,p.accent_ink
     return (p.accent_soft if pressed else p.surface if hovered else p.surface_alt,
             p.accent_hover if hovered and not pressed else p.border,p.text)
 
@@ -314,28 +411,7 @@ def dispatch_native_wheel(widget,event,handler):
 
 def color_palette(dark, name="blue"):
     name = name if name in COLOR_THEMES else "blue"
-    base = DARK if dark else LIGHT
-    if name == "blue":
-        return base  # Canonical palette for standalone bool-themed controls.
-    key = bool(dark), name
-    if key not in _COLOR_PALETTES:
-        accent = COLOR_THEMES[name][int(bool(dark))]
-        surface = _blend_colour("#202124" if dark else "#ffffff", accent, .025 if dark else 0)
-        window = _blend_colour("#18191c" if dark else "#f5f6f7", accent, .035)
-        _COLOR_PALETTES[key] = replace(base, window=window, surface=surface,
-            surface_alt=_blend_colour("#2a2b2e" if dark else "#f0f1f2", accent, .06),
-            input=_blend_colour("#1b1c1f" if dark else "#fafbfc", accent, .025),
-            border=_blend_colour("#414248" if dark else "#d7d9dd", accent, .12),
-            border_subtle=_blend_colour("#303136" if dark else "#e8e9ed", accent, .055),
-            accent=accent, accent_hover=_blend_colour(accent, "#ffffff" if dark else "#000000", .17),
-            accent_soft=_blend_colour(surface, accent, .34 if dark else .16),
-            interaction_hover=_blend_colour(surface, accent, .23 if dark else .11),
-            selection=_blend_colour(accent, "#000000", .44 if dark else .04),
-            primary_text=window if dark else "#ffffff",
-            meter_lane=_blend_colour("#414248" if dark else "#9da3aa", accent, .18),
-            meter_grid=_blend_colour("#a1a5ac" if dark else "#687078", accent, .10),
-            load_track=_blend_colour("#34363a" if dark else "#acb2b9", accent, .12))
-    return _COLOR_PALETTES[key]
+    return _COLOR_PALETTES[bool(dark),name]
 
 
 def widget_palette(widget, dark=None, *, fallback=None):
@@ -389,10 +465,12 @@ METRICS = {
     "channel_protocol_gap": 2,
     "control_border_width": 1,
     "control_corner_radius": 7,
+    "tab_pane_radius": 8,
     "window_width": 900,
     "window_height": 700,
     "outer": 20,
     "section_gap": CARD_GAP,
+    "inner_card_gap": INNER_CARD_GAP,
     "card_padding": 16,
     "compact_card_padding": 12,
     "card_content_gap": 10,
@@ -1119,8 +1197,8 @@ def apply_native_application_palette(p):
         QPalette.Text: p.text, QPalette.Button: p.surface_alt,
         QPalette.ButtonText: p.text, QPalette.ToolTipBase: p.surface,
         QPalette.ToolTipText: p.text, QPalette.Highlight: p.accent_soft,
-        QPalette.HighlightedText: p.text, QPalette.Link: p.accent,
-        QPalette.LinkVisited: p.accent, QPalette.BrightText: p.primary_text,
+        QPalette.HighlightedText: p.text, QPalette.Link: p.accent_ink,
+        QPalette.LinkVisited: p.accent_ink, QPalette.BrightText: p.primary_text,
         QPalette.Light: p.border, QPalette.Midlight: p.border_subtle,
         QPalette.Mid: p.border, QPalette.Dark: p.border_subtle,
         QPalette.Shadow: p.border,
@@ -1132,16 +1210,48 @@ def apply_native_application_palette(p):
     QApplication.instance().setPalette(palette)
 
 
+_CHOICE_INDICATOR_SIZE = 16
+_CHOICE_REST_STROKE = 1.25
+
+
+def _choice_stroke(palette, *, checked, enabled, hovered):
+    if not enabled:
+        return palette.border_subtle
+    if hovered:
+        return palette.accent_hover
+    return palette.accent if checked else palette.choice_outline
+
+
+def _paint_choice_outline(painter, indicator, border, fill, *, stroke=_CHOICE_REST_STROKE, radius=None):
+    # Snap the outside edge to physical pixels without rounding the pen
+    # width. That keeps the weight proportional at fractional display scales.
+    transform = painter.deviceTransform()
+    pixels = transform.mapRect(QRectF(indicator))
+    side = math.floor(min(pixels.width(), pixels.height()) + .5)
+    center = pixels.center()
+    left = math.floor(center.x() - side / 2 + .5)
+    top = math.floor(center.y() - side / 2 + .5)
+    outline = transform.inverted()[0].mapRect(QRectF(left, top, side, side))
+    inset = stroke / 2
+    shape = outline.adjusted(inset, inset, -inset, -inset)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor(border), stroke))
+    painter.setBrush(QColor(fill))
+    if radius is None:
+        painter.drawEllipse(shape)
+    else:
+        painter.drawRoundedRect(shape, radius, radius)
+    return outline
+
+
 def paint_outline_check_indicator(painter, indicator, palette, *, checked, enabled=True, hovered=False):
     """Same indicator pixels for a control and a settings-table cell."""
     p = palette
-    painter.setRenderHint(QPainter.Antialiasing)
     hovered=enabled and hovered
     fill = p.surface_alt if not enabled else (p.interaction_hover if hovered else p.input)
-    border = p.border if not enabled else (p.accent_hover if hovered else p.accent if checked else p.muted)
-    painter.setPen(QPen(QColor(border), 1.5 if checked or hovered else 1))
-    painter.setBrush(QColor(fill))
-    painter.drawRoundedRect(QRectF(indicator).adjusted(0.75, 0.75, -0.75, -0.75), 4, 4)
+    border = _choice_stroke(p, checked=checked, enabled=enabled, hovered=hovered)
+    stroke = 1.5 if checked or hovered else _CHOICE_REST_STROKE
+    _paint_choice_outline(painter, indicator, border, fill, stroke=stroke, radius=2.5)
     if checked:
         pen = QPen(QColor(disabled_control_color(p) if not enabled else p.accent_hover if hovered else p.accent), 2.2)
         pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
@@ -1231,7 +1341,55 @@ class NativeEffectTabBar(QTabBar):
 
 
 class NativeTabs(QTabWidget):
-    """Peer tab state changes re-hit the cursor without pointer motion."""
+    """Shared pane clipping and cursor feedback for every tab page."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pane_corner_radius = METRICS['tab_pane_radius']
+        self._pane_stack = self.findChild(QStackedWidget, 'qt_tabwidget_stackedwidget')
+        self._pane_stack.installEventFilter(self)
+        self.currentChanged.connect(self._sync_pane_clip)
+
+    def _set_pane_corner_radius(self, radius):
+        self._pane_corner_radius = max(0, radius)
+        self._sync_pane_clip()
+
+    paneCornerRadius = Property(int, lambda self: self._pane_corner_radius, _set_pane_corner_radius)
+
+    def _sync_pane_clip(self, *_args):
+        stack = getattr(self, '_pane_stack', None)
+        if stack is None:
+            return
+        geometry = (self._pane_corner_radius, stack.geometry(), self.size())
+        if geometry == getattr(self, '_pane_clip_geometry', None):
+            return
+        self._pane_clip_geometry = geometry
+        if not self._pane_corner_radius:
+            stack.clearMask()
+            return
+        option = QStyleOptionTabWidgetFrame()
+        self.initStyleOption(option)
+        pane = self.style().subElementRect(QStyle.SE_TabWidgetTabPane, option, self)
+        path = QPainterPath()
+        # Protect the stroke's inner antialiasing fringe, including the extra
+        # physical pixel introduced when region edges round at fractional DPR.
+        inset = 3
+        radius = max(0, self._pane_corner_radius - inset)
+        path.addRoundedRect(QRectF(pane).adjusted(inset, inset, -inset, -inset), radius, radius)
+        interior = QRegion(path.toFillPolygon().toPolygon())
+        stack.setMask(interior.translated(-stack.x(), -stack.y()).intersected(stack.rect()))
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.Show, QEvent.Resize, QEvent.StyleChange, QEvent.Polish):
+            self._pane_clip_geometry = None
+            self._sync_pane_clip()
+        return result
+
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, '_pane_stack', None) and event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show):
+            self._sync_pane_clip()
+        return super().eventFilter(watched, event)
+
     def setTabEnabled(self,index,enabled):
         super().setTabEnabled(index,enabled)
         refresh_native_pointer_feedback(self.tabBar())
@@ -1379,8 +1537,101 @@ class OutlineCheckBox(QCheckBox):
         # standard mnemonic/alignment semantics.
         contents = style.subElementRect(QStyle.SE_CheckBoxContents, option, self)
         painter.setFont(self.font())
-        painter.setPen(QColor(disabled_control_color(p) if not enabled else p.accent_hover if hovered else p.label))
+        painter.setPen(QColor(disabled_control_color(p) if not enabled else p.accent_ink if hovered else p.label))
         painter.drawText(contents, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextShowMnemonic, self.text())
+
+
+class NativeRadioButton(QRadioButton):
+    """Qt manages the label, focus and selection. Paint the indicator as circles."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setProperty("nativeFormOption", True)
+        self.setAttribute(Qt.WA_Hover, True)
+        sync_native_command_cursor(self)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.EnabledChange, QEvent.ParentChange, QEvent.Show):
+            sync_native_command_cursor(self)
+        return result
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        indicator = self.style().subElementRect(QStyle.SE_RadioButtonIndicator, option, self)
+        p = widget_palette(self)
+        enabled, checked = self.isEnabled(), self.isChecked()
+        hovered = enabled and self.underMouse()
+        border = _choice_stroke(p, checked=checked, enabled=enabled, hovered=hovered)
+        fill = p.surface_alt if not enabled else p.interaction_hover if hovered else p.input
+        painter = QPainter(self)
+        outline = _paint_choice_outline(painter, indicator, border, fill)
+        if checked:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(border if enabled else disabled_control_color(p)))
+            painter.drawEllipse(outline.center(), 3.5, 3.5)
+
+
+class NativeRadioChoice(QWidget):
+    """Short, fixed choices with native radio semantics and width-aware rows."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self._values = tuple(value for value, _ in options)
+        self.buttons = []
+        self._group = QButtonGroup(self)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        layout = WrappingControlLayout(self, equal_cells=True, maximum_gap=None)
+        layout.setSpacing(INNER_CARD_GAP)
+        for index, (_, caption) in enumerate(options):
+            button = NativeRadioButton(caption, self)
+            button.installEventFilter(self)
+            self._group.addButton(button, index)
+            self.buttons.append(button)
+            layout.addWidget(button)
+        self._group.idToggled.connect(self._select)
+        self.buttons[0].setChecked(True)
+
+    def _select(self, index, checked):
+        if checked:
+            self.setFocusProxy(self.buttons[index])
+            self.valueChanged.emit(self._values[index])
+
+    def value(self):
+        index = self._group.checkedId()
+        return None if index < 0 else self._values[index]
+
+    def setValue(self, value):
+        self.buttons[self._values.index(value)].setChecked(True)
+
+    def clear_selection(self):
+        selected = self._group.checkedButton()
+        if selected is not None:
+            self._group.setExclusive(False)
+            selected.setChecked(False)
+            self._group.setExclusive(True)
+        self.setFocusProxy(self.buttons[0])
+
+    def sizeHint(self):
+        return self.layout().sizeHint()
+
+    def minimumSizeHint(self):
+        return QSize(0, FORM_ROW_HEIGHT)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self.layout().heightForWidth(width)
+
+    def eventFilter(self, watched, event):
+        if handle_exclusive_choice_key(self._group, self.buttons, watched, event, vertical=True):
+            return True
+        return super().eventFilter(watched, event)
 
 
 @dataclass
@@ -1742,7 +1993,7 @@ class NativeToggleSwitch(OutlineCheckBox):
             fill = p.accent_hover if hovered else p.accent
         else:
             fill = p.interaction_hover if hovered else p.input
-        border = p.border_subtle if not enabled else p.accent_hover if hovered else p.accent if checked else p.border
+        border = _choice_stroke(p, checked=checked, enabled=enabled, hovered=hovered)
         painter.setPen(QPen(QColor(border), METRICS["control_border_width"]))
         painter.setBrush(QColor(fill))
         # Switch identity is a capsule, not a button-shaped rounded rectangle.
@@ -1753,15 +2004,18 @@ class NativeToggleSwitch(OutlineCheckBox):
         # Retained momentum may briefly continue toward the old endpoint.
         # Keep the thumb visually inside its track, without resetting velocity.
         position = max(0.0, min(1.0, self._thumb_position))
+        disabled_ink = disabled_control_color(p) if not enabled else None
+        neutral_ink = disabled_ink or p.muted
         if self.property("mixedValue"):
             position = .5
-            painter.setPen(QPen(QColor(p.muted), 1))
+            painter.setPen(QPen(QColor(neutral_ink), 1))
             painter.drawLine(track.center() + QPointF(-4, 0), track.center() + QPointF(4, 0))
         thumb_x = track.left() + 3 + max(0, width - diameter - 6) * position
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(p.muted if not enabled else p.window if checked else p.label if hovered else p.muted))
+        thumb_ink = disabled_ink or (p.window if checked else p.label if hovered else p.muted)
+        painter.setBrush(QColor(thumb_ink))
         if unknown:
-            painter.setPen(QColor(p.muted))
+            painter.setPen(QColor(neutral_ink))
             painter.drawText(track,Qt.AlignCenter,'?')
         else:
             painter.drawEllipse(QRectF(thumb_x, track.center().y() - diameter / 2, diameter, diameter))
@@ -1774,7 +2028,7 @@ class NativeToggleSwitch(OutlineCheckBox):
         # Remove floating-point noise before resolving the half-pixel tie.
         contents.moveTop(math.ceil(round(label_y * ratio, 9) - .5) / ratio)
         painter.setFont(self.font())
-        painter.setPen(QColor(disabled_control_color(p) if not enabled else p.accent_hover if hovered else p.label))
+        painter.setPen(QColor(disabled_ink or (p.accent_ink if hovered else p.label)))
         painter.drawText(contents, Qt.AlignLeft | Qt.AlignTop | Qt.TextShowMnemonic, self.text())
 
 
@@ -2792,9 +3046,11 @@ class SoundFontComboBox(AnimatedComboBox):
         value = self.currentData(Qt.UserRole)
         if self.currentData(SOUNDFONT_ROW_KIND_ROLE)==SOUNDFONT_ROW_UNSAVED:
             return str(value or '')  # The display caption is never a file path.
-        if value and value != SOUNDFONT_PICKER_SENTINEL:
+        if value == SOUNDFONT_PICKER_SENTINEL:
+            return ""
+        if value:
             return str(value)
-        return self.currentText() if self.currentText() != tr("action.change_soundfont") else ""
+        return self.currentText()
 
     def setText(self, path: str) -> None:
         if not str(path).strip():
@@ -3286,7 +3542,7 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
     surface = QColor(p.surface)
     glass = f"rgba({surface.red()}, {surface.green()}, {surface.blue()}, 235)"
     selection = p.selection
-    selected_button_text = p.accent_hover if light else p.accent
+    selected_button_text = p.accent_ink
     # One semantic disabled treatment for every control: retain legible text,
     # remove the live accent, and distinguish locked values from editable ones.
     disabled_color = disabled_control_color(p)
@@ -3317,21 +3573,22 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
         {native_tooltip_stylesheet(p)}
         QLabel#AppTitle {{ font-size: {METRICS['title_font_px']}px; }}
         QLabel#AppSubtitle, QLabel#MutedLabel {{ color: {p.muted}; font-size: {METRICS['small_font_px']}px; }}
-        QLabel#StatCaption {{ color: {p.accent}; font-size: {METRICS['state_caption_font_px']}px; }}
+        QLabel#StatCaption {{ color: {p.accent_ink}; font-size: {METRICS['state_caption_font_px']}px; }}
         QLabel#CardTitle, QLabel#DialogTitle {{ font-size: {METRICS['card_title_font_px']}px; }}
         QLabel#DialogTitle {{ font-size: {METRICS['dialog_title_font_px']}px; }}
         QLabel#StatValue {{ font-size: {METRICS['state_value_font_px']}px; }}
         QLabel#FieldLabel {{ color: {p.label}; }}
-        QLabel#FieldLabel:disabled, QLabel#FieldValue:disabled {{ color: {disabled_color}; }}
+        QLabel:disabled, QLabel#FieldLabel:disabled, QLabel#FieldValue:disabled,
+        QLabel#MutedLabel:disabled {{ color: {disabled_color}; }}
         QLabel[nativeKnobPart="caption"], QLabel#ChannelEditorFieldLabel {{ color: {p.label}; font-size: {METRICS['small_font_px']}px; }}
-        QWidget[ccNoEffect="true"] QLabel#KnobFieldLabel, QWidget[ccNoEffect="true"] QLabel#ChannelEditorFieldLabel {{ color: {p.danger}; }}
-        QWidget[ccNoEffect="true"] {{ background: {no_effect_fill}; border: 1px dashed {no_effect_edge}; border-radius: 4px; }}
+        QWidget[ccNoEffect="true"] QLabel#KnobFieldLabel:enabled, QWidget[ccNoEffect="true"] QLabel#ChannelEditorFieldLabel:enabled {{ color: {p.danger}; }}
+        QWidget[ccNoEffect="true"]:enabled {{ background: {no_effect_fill}; border: 1px dashed {no_effect_edge}; border-radius: 4px; }}
         QWidget[ccNoEffect="true"] QLabel, QWidget[ccNoEffect="true"] QWidget {{ background: transparent; border: 0; }}
-        QWidget[ccLearning="true"] {{ border: 1px solid {p.accent}; border-radius: 4px; }}
+        QWidget[ccLearning="true"]:enabled {{ border: 1px solid {p.accent}; border-radius: 4px; }}
         QWidget[ccLearning="true"] QLabel, QWidget[ccLearning="true"] QWidget {{ border: 0; }}
         QLabel[nativeKnobPart="readout"] {{ color: {p.text}; font-size: {METRICS['small_font_px']}px; }}
         QLabel[nativeKnobPart="detail"] {{ color: {p.label}; font-size: {METRICS['small_font_px']}px; }}
-        QLabel[nativeEditableField="true"][nativeEntryAvailable="true"]:enabled:hover {{ color: {p.accent}; }}
+        QLabel[nativeEditableField="true"][nativeEntryAvailable="true"]:enabled:hover {{ color: {p.accent_ink}; }}
         QLabel#KnobFieldLabel:disabled, QLabel#KnobFieldValue:disabled, QLabel#KnobFieldDetail:disabled,
         QLabel#ChannelEditorFieldLabel:disabled, QLabel[nativeEditableField="true"][nativeEntryAvailable="false"] {{ color: {disabled_color}; }}
         QLabel#PresetIdentity {{
@@ -3339,7 +3596,7 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
             border-radius: 7px; padding: 6px 8px;
         }}
         QLabel#ValuePill, QLabel#StatusChip {{
-            color: {p.accent}; background: {p.accent_soft}; border-radius: 10px; padding: 4px 8px;
+            color: {p.accent_ink}; background: {p.accent_soft}; border-radius: 10px; padding: 4px 8px;
         }}
         QFrame#NativeCard {{
             background: {glass}; border: 1px solid {p.border}; border-radius: 12px;
@@ -3406,6 +3663,7 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
             padding: 2px; selection-background-color: {selection}; selection-color: #ffffff;
         }}
         QLabel#StatusLogTitle {{ color: {p.muted}; font-family: "{project_noto_family()}"; font-size: {METRICS['card_title_font_px']}px; font-weight: 400; }}
+        QLabel#MidiInputNotice {{ color: {p.text}; border-left: 2px solid {p.warning}; padding: 3px 6px; }}
         QLabel#EngineLoadValue {{ color: {p.text}; font-size: {METRICS['engine_load_value_font_px']}px; }}
         QComboBox::drop-down {{ border: none; width: 30px; }}
         QComboBox[compactChannelField="true"] {{ padding: 0 5px; }}
@@ -3457,15 +3715,16 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
         QPushButton#SegmentEnd {{ border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}
         QPushButton#SegmentStart:hover:!checked:enabled, QPushButton#SegmentEnd:hover:!checked:enabled, QPushButton#SegmentMiddle:hover:!checked:enabled {{ background: {p.interaction_hover}; color: {p.text}; }}
         QPushButton#SegmentStart:checked, QPushButton#SegmentEnd:checked, QPushButton#SegmentMiddle:checked {{ background: {p.accent_soft}; color: {selected_button_text}; font-weight: 700; }}
-        QPushButton#SegmentStart:checked:hover:enabled, QPushButton#SegmentEnd:checked:hover:enabled, QPushButton#SegmentMiddle:checked:hover:enabled {{ color: {p.accent_hover}; }}
+        QPushButton#SegmentStart:checked:hover:enabled, QPushButton#SegmentEnd:checked:hover:enabled, QPushButton#SegmentMiddle:checked:hover:enabled {{ color: {p.accent_ink}; }}
         QPushButton#SegmentStart:disabled, QPushButton#SegmentEnd:disabled, QPushButton#SegmentMiddle:disabled {{ color: {disabled_color}; }}
         QToolButton#FilterButton {{ min-height: {button_height}px; border-radius: 6px; padding: 0 9px; }}
         QToolButton#FilterButton:checked {{ font-weight: 700; }}
         QFrame#NativeFilterBar {{ background: {p.surface_alt}; border: 1px solid {p.border}; border-radius: 8px; }}
         QFrame#FontDropLine {{ background: {p.accent}; border: 0; }}
-        QTabWidget::pane {{ border: 1px solid {p.border_subtle}; border-radius: 8px; top: -1px; }}
+        NativeTabs {{ qproperty-paneCornerRadius: {METRICS['tab_pane_radius']}; }}
+        QTabWidget::pane {{ border: 1px solid {p.border_subtle}; border-radius: {METRICS['tab_pane_radius']}px; top: -1px; }}
         QTabBar::tab {{ background: transparent; color: {p.muted}; font-size: {tab_font}px; padding: {tab_padding}; margin-right: 3px; border-bottom: 2px solid transparent; }}
-        QTabBar::tab:selected {{ color: {p.accent}; border-bottom-color: {p.accent}; font-weight: 700; }}
+        QTabBar::tab:selected {{ color: {p.accent_ink}; border-bottom-color: {p.accent}; font-weight: 700; }}
         /* The eight main effect tabs use the shared 15px tab scale. The selected
            600 state is intentional; other selected controls use 700. */
         QTabWidget#EffectTabs QTabBar::tab, QTabWidget[parameterTabs="true"] QTabBar::tab {{ font-family: "{project_noto_family()}"; font-size: {EFFECT_TAB_FONT_PX}px; font-weight: 400; }}
@@ -3501,20 +3760,16 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
         QSlider#ChannelMonitorFader[unknownValue="true"]::add-page:vertical {{ background: {p.border}; }}
         QCheckBox, QRadioButton {{ spacing: 8px; color: {p.text}; }}
         QCheckBox:disabled, QRadioButton:disabled {{ color: {disabled_color}; }}
-        QCheckBox:hover:enabled, QRadioButton:hover:enabled {{ color: {p.accent_hover}; }}
+        QCheckBox:hover:enabled, QRadioButton:hover:enabled {{ color: {p.accent_ink}; }}
         /* OutlineCheckBox paints every state; QSS supplies geometry only. */
-        QCheckBox::indicator {{ width: 16px; height: 16px; }}
+        QCheckBox::indicator, QRadioButton[nativeFormOption="true"]::indicator {{ width: {_CHOICE_INDICATOR_SIZE}px; height: {_CHOICE_INDICATOR_SIZE}px; }}
+        QRadioButton[nativeFormOption="true"] {{ min-height: {FORM_ROW_HEIGHT}px; }}
+        QRadioButton[nativeFormOption="true"]::indicator {{ border: 0; background: transparent; }}
         QSpinBox, QDoubleSpinBox {{ min-height: {control_height}px; background: {p.input}; border: {control_border}px solid {p.border}; border-radius: {control_radius}px; padding: 0 8px; }}
         QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled, QComboBox:disabled {{ color: {disabled_color}; background: {p.surface_alt}; border-color: {p.border_subtle}; }}
-        QRadioButton::indicator {{ width: 15px; height: 15px; border: 1px solid {p.border}; border-radius: 8px; background: {p.input}; }}
-        QRadioButton::indicator:checked {{
-            border-color: {p.accent};
-            background: qradialgradient(cx: 0.5, cy: 0.5, radius: 0.5,
-                stop: 0 {p.accent}, stop: 0.45 {p.accent},
-                stop: 0.46 {p.input}, stop: 1 {p.input});
-        }}
-        QRadioButton::indicator:checked:hover:enabled {{ border-color: {p.accent_hover}; }}
-        QListWidget {{ background: {p.surface}; alternate-background-color: {p.surface_alt}; color: {p.text}; border: 1px solid {p.border}; border-radius: 7px; }}
+        QListWidget, QScrollArea#MidiEndpointList {{ background: {p.surface}; color: {p.text}; border: 1px solid {p.border}; border-radius: 7px; }}
+        QListWidget {{ alternate-background-color: {p.surface_alt}; }}
+        QScrollArea#MidiEndpointList QWidget#qt_scrollarea_viewport {{ background: transparent; }}
         QListWidget::item {{ padding: 4px 6px; border: 1px solid transparent; }}
         {native_item_hover_stylesheet(p, 'QListWidget::item')}
         QListWidget::item:selected {{ background: {selection}; color: #ffffff; }}
@@ -3553,6 +3808,24 @@ def native_stylesheet(p: NativePalette, compact: bool = False) -> str:
     """
 
 
+def apply_native_window_topmost(window):
+    """All owned top-level windows consume their main owner's preference."""
+    owner=window
+    while owner.parentWidget() is not None:owner=owner.parentWidget()
+    preferences=getattr(owner,'_engine_preferences',None)
+    if preferences is None:return
+    enabled=preferences.always_on_top
+    if QApplication.platformName()=='windows':
+        hwnd=int(window.effectiveWinId() or 0)
+        if hwnd:
+            from windows_integration import set_window_topmost
+            set_window_topmost(hwnd,enabled)
+    else:
+        visible=window.isVisible()
+        window.setWindowFlag(Qt.WindowStaysOnTopHint,enabled)
+        if visible:window.show()
+
+
 class NativeWindowShellGuard(QObject):
     """Taskbar membership follows HWND lifetime,not individual dialog code."""
     def __init__(self, window):
@@ -3565,6 +3838,7 @@ class NativeWindowShellGuard(QObject):
             if hwnd:
                 from windows_integration import expose_taskbar_window
                 expose_taskbar_window(hwnd)
+                apply_native_window_topmost(window)
         return False
 
 
@@ -3701,7 +3975,8 @@ def flat_tab_pane_stylesheet():
     """Shared borderless tab-pane treatment for embedded editor tabs."""
     # Borderless does not mean that the first control touches the active-tab
     # underline. NativeContentTabs includes this gap in height-for-width.
-    return ('QTabWidget::pane { border: 0; background: transparent; '
+    return ('NativeTabs { qproperty-paneCornerRadius: 0; } '
+            'QTabWidget::pane { border: 0; background: transparent; '
             f'padding: {NativeContentTabs.PANE_TOP_GAP}px 0px 0px 0px; }}')
 
 
@@ -4192,19 +4467,21 @@ class NativeKnob(QDial):
         span = -self.ARC_SWEEP_DEGREES * 16
         fraction = ((self.value() - self.minimum()) /
                     max(1, self.maximum() - self.minimum()))
-        no_effect = bool(self.property("ccNoEffect"))
-        rim = QColor(palette.danger if no_effect else palette.border)
+        enabled = self.isEnabled()
+        no_effect = enabled and bool(self.property("ccNoEffect"))
+        inactive_ink = disabled_control_color(palette) if not enabled else None
+        rim = QColor(palette.danger if no_effect else palette.border if enabled else palette.border_subtle)
         if no_effect:
             rim.setAlpha(115)
         painter.setPen(QPen(rim, 2.5, Qt.SolidLine, Qt.RoundCap))
         painter.drawArc(arc, start, span)
         painter.setPen(QPen(QColor(palette.danger if no_effect else
-                                  palette.accent if self.isEnabled() else palette.muted),
+                                  inactive_ink or palette.accent),
                             3, Qt.SolidLine, Qt.RoundCap))
         if not self.property("mixedValue") and not self.property('unknownValue'):
             painter.drawArc(arc, start, round(span * fraction))
-        painter.setPen(QPen(QColor(palette.border), 1))
-        painter.setBrush(QColor(palette.input))
+        painter.setPen(QPen(QColor(palette.border if enabled else palette.border_subtle), 1))
+        painter.setBrush(QColor(palette.input if enabled else palette.surface_alt))
         face_inset = 5 if self._compact else 6
         painter.drawEllipse(circle.adjusted(face_inset, face_inset,
                                             -face_inset, -face_inset))
@@ -4212,7 +4489,7 @@ class NativeKnob(QDial):
         cx, cy = circle.center().x(), circle.center().y()
         radius = side * 0.23
         painter.setPen(QPen(QColor(palette.danger if no_effect else
-                                  palette.text if self.isEnabled() else palette.muted),
+                                  inactive_ink or palette.text),
                             2, Qt.SolidLine, Qt.RoundCap))
         if not self.property("mixedValue") and not self.property('unknownValue'):
             painter.drawLine(QPointF(cx, cy),
@@ -4286,6 +4563,7 @@ class NativeKnobField(QWidget):
         if editable:
             domain = entry_domain or replace(numeric_entry_domain('number_integer',minimum,maximum),offset=edit_offset)
             self._entry_domain = domain
+            self._edit_context = edit_context
             self.value.configure(
                 minimum=domain.minimum, maximum=domain.maximum,
                 decimals=domain.decimals, format_input=domain.entry_text,
@@ -4307,6 +4585,34 @@ class NativeKnobField(QWidget):
             write=(lambda number:self.set(physical_domain.to_raw(number))) if physical_domain else None)
         self.set(initial, False)
         self.value.raise_()
+
+    def tuning_unit_choice(self):
+        """Fine-tuning display/input units share the same canonical cent value."""
+        choice = NativeSegmentedChoice(('cent', 'Hz'), self)
+        choice.setToolTip(tr('channel_editor.fine_tuning_units_tip'))
+        choice.setAccessibleName(tr('channel_editor.fine_tuning_units'))
+        self._cent_entry_domain = self._entry_domain
+        self._cent_formatter = self.formatter
+
+        def select(index):
+            domain = self._cent_entry_domain
+            if index:
+                domain = replace(domain, kind='tuning_hz', decimals=2, signed=False)
+            self._entry_domain = domain
+            self.formatter = ((lambda value: f'{domain.to_entry(value):.2f} Hz')
+                              if index else self._cent_formatter)
+            self.value.cancel_editor()
+            self.value.configure(minimum=domain.minimum, maximum=domain.maximum,
+                decimals=domain.decimals, format_input=domain.entry_text,
+                read=lambda: domain.to_entry(self.get()),
+                write=lambda value: self.set(domain.to_raw(value)),
+                context=self._edit_context, label=self.title.text())
+            self.knob.set_accessible_domain(domain, lambda _value: self.formatter(self.get()),
+                read=lambda: domain.to_entry(self.get()), write=lambda value: self.set(domain.to_raw(value)))
+            self.set_mixed(bool(self.knob.property('mixedValue')))
+            choice.set_selected(index)
+        choice.selected.connect(select)
+        return choice
 
     def add_cc_identity(self):
         """An optional protocol legend, beside—not inside—the dial hit area."""
@@ -4584,8 +4890,10 @@ class NativeRotatedLabel(QWidget):
         painter = QPainter(self)
         painter.translate(self.width(), 0) if self._clockwise else painter.translate(0, self.height())
         painter.rotate(90 if self._clockwise else -90)
-        painter.setPen(QColor(getattr(palette, self._tone) if self._tone else
-                              palette.text if self._emphasis else palette.label))
+        color = (disabled_control_color(palette) if not self.isEnabled() else
+                 getattr(palette, self._tone) if self._tone else
+                 palette.text if self._emphasis else palette.label)
+        painter.setPen(QColor(color))
         font = native_text_font()
         font.setPixelSize(self._text_px)
         font.setStyleStrategy(QFont.PreferAntialias)
@@ -4895,6 +5203,30 @@ class NativeFilterButton(QToolButton):
         if event.type()==QEvent.EnabledChange:sync_native_command_cursor(self)
 
 
+def handle_exclusive_choice_key(group, buttons, watched, event, *, vertical=False):
+    keys = (Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End)
+    if vertical:
+        keys += (Qt.Key_Up, Qt.Key_Down)
+    if event.type() != QEvent.KeyPress or event.key() not in keys or watched not in buttons:
+        return False
+    available = [index for index, button in enumerate(buttons)
+                 if button.isEnabled() and not button.isHidden()]
+    if not available:
+        return True
+    origin = group.id(watched)
+    if event.key() == Qt.Key_Home:
+        target = available[0]
+    elif event.key() == Qt.Key_End:
+        target = available[-1]
+    else:
+        direction = 1 if event.key() in (Qt.Key_Right, Qt.Key_Down) else -1
+        position = available.index(origin) if origin in available else 0
+        target = available[(position + direction) % len(available)]
+    buttons[target].setFocus(Qt.TabFocusReason)
+    buttons[target].click()
+    return True
+
+
 class NativeSegmentedChoice(QFrame):
     """A compact, exclusive mode choice with no horizontal size floor."""
 
@@ -4922,7 +5254,7 @@ class NativeSegmentedChoice(QFrame):
             button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             button.installEventFilter(self)
             self.group.addButton(button, index)
-            row.addWidget(button)
+            row.addWidget(button, 1)
             self.buttons.append(button)
         self.group.idClicked.connect(self.selected)
         self.set_selected(0)
@@ -4933,10 +5265,10 @@ class NativeSegmentedChoice(QFrame):
         metrics = QFontMetrics(selected_font)
         # The selected caption becomes bold. Reserve its real advance plus
         # breathing room at normal width; minimumSizeHint still remains 0.
-        width = sum((button.sizeHint().width() if isinstance(button,NativeAppearanceButton) else
-                    metrics.horizontalAdvance(button.text()) + self.INLINE_PADDING * 2 + 8)
-                    for button in self.buttons) + 2
-        return QSize(width, FORM_ROW_HEIGHT)
+        cell_width = max((button.sizeHint().width() if isinstance(button, NativeAppearanceButton) else
+                          metrics.horizontalAdvance(button.text()) + self.INLINE_PADDING * 2 + 8
+                          for button in self.buttons), default=0)
+        return QSize(cell_width * len(self.buttons) + 2, FORM_ROW_HEIGHT)
 
     def minimumSizeHint(self):
         return QSize(0, FORM_ROW_HEIGHT)
@@ -4948,19 +5280,125 @@ class NativeSegmentedChoice(QFrame):
         return self.group.checkedId()
 
     def eventFilter(self, watched, event):
-        if watched in self.buttons and event.type() == QEvent.KeyPress:
-            if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End):
-                available=[index for index,button in enumerate(self.buttons)
-                           if button.isEnabled() and not button.isHidden()]
-                if not available:return True
-                origin=self.group.id(watched)
-                target = (available[0] if event.key() == Qt.Key_Home else
-                          available[-1] if event.key() == Qt.Key_End else
-                          next(index for step in range(1,len(self.buttons)+1)
-                               if (index:=(origin+(1 if event.key()==Qt.Key_Right else -1)*step)%len(self.buttons)) in available))
-                self.buttons[target].setFocus()
-                self.buttons[target].click()
-                return True
+        if handle_exclusive_choice_key(self.group, self.buttons, watched, event):
+            return True
+        return super().eventFilter(watched, event)
+
+
+class NativeColorSwatch(QRadioButton):
+    """Named native radio choice with a square theme-colour face."""
+
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.palettes = (color_palette(False, name), color_palette(True, name))
+        caption = tr('appearance.palette_' + name)
+        self.setToolTip(caption)
+        self.setAccessibleName(caption)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(FORM_ROW_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        sync_native_command_cursor(self)
+
+    def sizeHint(self):
+        return QSize(FORM_ROW_HEIGHT, FORM_ROW_HEIGHT)
+
+    def minimumSizeHint(self):
+        return QSize(0, FORM_ROW_HEIGHT)
+
+    def hitButton(self, position):
+        return self.rect().contains(position)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == QEvent.EnabledChange:
+            sync_native_command_cursor(self)
+        return result
+
+    def paintEvent(self, event):
+        p = widget_palette(self)
+        swatch = self.palettes[int(QColor(p.window).lightness() < 128)]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        fill, border, _ink = command_state_colors(p, enabled=self.isEnabled(),
+            hovered=self.underMouse(), pressed=self.isDown(), checked=self.isChecked())
+        painter.setPen(QPen(QColor(p.accent if self.isChecked() and self.isEnabled() else border), 2 if self.isChecked() else 1))
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 5, 5)
+        face = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        if face.isEmpty():
+            return
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(swatch.accent if self.isEnabled() else disabled_control_color(p)))
+        painter.drawRoundedRect(face, 2, 2)
+        if self.isChecked():
+            painter.setPen(QPen(QColor(swatch.primary_text), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            path = QPainterPath()
+            path.moveTo(face.left()+face.width()*.25, face.center().y())
+            path.lineTo(face.left()+face.width()*.43, face.top()+face.height()*.68)
+            path.lineTo(face.left()+face.width()*.78, face.top()+face.height()*.32)
+            painter.drawPath(path)
+
+
+class NativePaletteChoice(QWidget):
+    """Exclusive colour swatches with native radio input and wrapping layout."""
+
+    currentIndexChanged = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(0, 0)
+        policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        self.names = ('rose', 'coral', 'orange', 'amber', 'lime', 'green',
+                      'teal', 'cyan', 'blue', 'indigo', 'purple', 'magenta')
+        self.group = QButtonGroup(self)
+        self.buttons = []
+        layout = WrappingControlLayout(self)
+        layout.setSpacing(COMPACT_CONTENT_GAP)
+        for index, name in enumerate(self.names):
+            button = NativeColorSwatch(name, self)
+            button.installEventFilter(self)
+            self.buttons.append(button)
+            self.group.addButton(button, index)
+            layout.addWidget(button)
+        self.group.idToggled.connect(self._selected)
+        self.setCurrentIndex(self.findData('blue'))
+
+    def _selected(self, index, checked):
+        if checked:
+            self.setFocusProxy(self.buttons[index])
+            self.currentIndexChanged.emit(index)
+
+    def currentIndex(self):
+        return self.group.checkedId()
+
+    def currentData(self):
+        return self.names[self.currentIndex()]
+
+    def findData(self, name):
+        return self.names.index(name) if name in self.names else -1
+
+    def setCurrentIndex(self, index):
+        if 0 <= index < len(self.buttons):
+            self.buttons[index].setChecked(True)
+
+    def sizeHint(self):
+        return self.layout().sizeHint()
+
+    def minimumSizeHint(self):
+        return QSize(0, FORM_ROW_HEIGHT)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self.layout().heightForWidth(width)
+
+    def eventFilter(self, watched, event):
+        if handle_exclusive_choice_key(self.group, self.buttons, watched, event, vertical=True):
+            return True
         return super().eventFilter(watched, event)
 
 
@@ -5100,6 +5538,15 @@ def paint_rack_glyph(painter, command, rect, color):
     elif command in ("add", "remove"):
         painter.drawLine(-6, 0, 6, 0)
         if command == "add": painter.drawLine(0, -6, 0, 6)
+    elif command == "rename":
+        painter.drawPolygon(QPolygonF([QPointF(-6, 6), QPointF(-5, 2), QPointF(3, -6),
+                                       QPointF(6, -3), QPointF(-2, 5)]))
+        painter.drawLine(QPointF(1, -4), QPointF(4, -1))
+    elif command == "confirm":
+        painter.drawPolyline(QPolygonF([QPointF(-6, 0), QPointF(-2, 4), QPointF(6, -4)]))
+    elif command == "cancel":
+        painter.drawLine(-4, -4, 4, 4)
+        painter.drawLine(-4, 4, 4, -4)
     elif command in ('left','right'):
         sign=1 if command=='right' else -1
         painter.drawLine(QPointF(-2*sign,-5),QPointF(3*sign,0))
@@ -5434,6 +5881,7 @@ class NativeRackItemDelegate(QStyledItemDelegate):
         hover = view.isEnabled() and view._hover_row == index.row()
         rect = QRectF(option.rect).adjusted(1, 1, -1, -1)
         active = bool(index.data(Qt.UserRole + 1))
+        mixed = bool(index.data(Qt.UserRole + 2))
         bypass = bool(view.property("rackBypassed"))
         painter.setPen(QPen(QColor(p.border), 1))
         painter.setBrush(self.row_color(p, active, bypass, hover))
@@ -5444,7 +5892,12 @@ class NativeRackItemDelegate(QStyledItemDelegate):
         painter.setPen(QPen(QColor(p.accent if active else p.muted), 1))
         painter.setBrush(QColor(p.accent) if effective else Qt.NoBrush)
         painter.drawEllipse(QRectF(power).adjusted(5, 5, -5, -5))
-        paint_rack_glyph(painter, "power", QRectF(power).adjusted(6, 6, -6, -6), p.primary_text if effective else p.muted)
+        if mixed:
+            painter.setPen(QPen(QColor(p.primary_text if effective else p.muted),2))
+            center=QRectF(power).center()
+            painter.drawLine(center+QPointF(-3,0),center+QPointF(3,0))
+        else:
+            paint_rack_glyph(painter, "power", QRectF(power).adjusted(6, 6, -6, -6), p.primary_text if effective else p.muted)
         text_rect = option.rect.adjusted(FORM_ROW_HEIGHT + 2, 0, -5, 0)
         painter.setFont(option.font); painter.setPen(QColor(color))
         painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter,
@@ -5722,6 +6175,11 @@ class NativeMessageBox(QMessageBox):
 
     def setText(self, text):self._set_message_content(super().setText,text)
     def setInformativeText(self, text):self._set_message_content(super().setInformativeText,text)
+
+    def informativeLabel(self):
+        """Return the existing label for changes that must preserve the window size."""
+        return self.findChild(QLabel, 'qt_msgbox_informativelabel')
+
     def setIcon(self, icon):self._set_message_content(super().setIcon,icon)
     def setCheckBox(self, checkbox):self._set_message_content(super().setCheckBox,checkbox)
 
@@ -5732,7 +6190,12 @@ class NativeMessageBox(QMessageBox):
             self.layout().removeWidget(previous);previous.deleteLater()
         self._message_content_widget=widget
         self._message_content_width=preferred_width
-        widget.setParent(self);widget.setMinimumSize(0,0)
+        widget.setParent(self)
+        widget.setMinimumSize(0, 0)
+        policy = widget.sizePolicy()
+        if policy.verticalPolicy() == QSizePolicy.Ignored:
+            policy.setVerticalPolicy(QSizePolicy.Preferred)
+            widget.setSizePolicy(policy)
         self._sync_message_presentation()
 
     def _sync_primary_action(self):
@@ -5863,6 +6326,10 @@ class NativeMessageBox(QMessageBox):
             # clamps the preferred width first,then queries that layout's HFW.
             # Never reuse Qt's provisional wrapped size hint or mounted width.
             fit_plain_dialog_contents(self,self._message_preferred_width(),opening=True)
+            content = getattr(self, '_message_content_widget', None)
+            if isinstance(content, QAbstractScrollArea):
+                content.verticalScrollBar().setValue(0)
+                content.horizontalScrollBar().setValue(0)
         elif previous_geometry is not None:
             self.setGeometry(previous_geometry);root.activate()
 
@@ -6216,14 +6683,14 @@ class NativeWarningLights(QWidget):
         states={} if states is None else states
         for key, pulse in self._pulses.items():
             level=states.get(key,0)
-            pulse.set_condition(level,now,magnitude=key=='overload')
+            pulse.set_condition(level,now,magnitude=key in PlaybackWarningEvidence.MAGNITUDE_STATES)
             if not level:
                 for _ in range(min(2,(events or {}).get(key,0))):pulse.trigger(now)
         self.advance_frame(now)
 
     def set_condition(self, key, level, now=None):
         now=time.monotonic() if now is None else now
-        self._pulses[key].set_condition(level,now,magnitude=key=='overload')
+        self._pulses[key].set_condition(level,now,magnitude=key in PlaybackWarningEvidence.MAGNITUDE_STATES)
         self.advance_frame(now)
 
     def advance_frame(self, now=None):
@@ -6915,6 +7382,7 @@ class NativeAudioVisualizer(QWidget):
         # then replaces it with the region-specific waveform/spectrum copy.
         self.setToolTip(" ")
         self._samples = ()
+        self._silent_waveform = False
         self._sample_rate = 48000.0
         self._revision = -1
         self._spectrum = []
@@ -6922,6 +7390,7 @@ class NativeAudioVisualizer(QWidget):
         self._spectrum_plan = None
         self._analysis_executor = None
         self._analysis_future = None
+        self._discard_analysis = False
         self._analysis_pending = None
         self._analysis_closed = False
         self._analysis_thread_id = None
@@ -6947,28 +7416,53 @@ class NativeAudioVisualizer(QWidget):
     def set_audio_snapshot(self, samples, sample_rate: float, revision: int,
                            *, finite_samples=False):
         """Publish immutable samples; poll ready work without waiting on the GUI."""
-        self._poll_analysis()
-        if revision == self._revision and float(sample_rate) == self._sample_rate:
-            if self._waveform_trails:
-                now=time.monotonic()
-                self._waveform_trails=[(stamp,path) for stamp,path in self._waveform_trails
-                    if now-stamp<self.WAVEFORM_TRAIL_SECONDS]
-                self.update()  # fade frozen publication too,without FFT work
+        sample_rate = max(1.0, float(sample_rate))
+        same_rate = sample_rate == self._sample_rate
+        if revision == self._revision and same_rate:
+            self._poll_analysis()
+            if self._silent_waveform:
+                self._release_silent_spectrum()
+            self._fade_waveform_trails()
             return
-        if revision < self._revision or sample_rate != self._sample_rate:
+        # Use published finite samples directly. Exact zero lets us preserve
+        # quiet signals and let the measured waveform clear before sleeping.
+        samples = (samples if finite_samples else
+                   tuple(float(value) if math.isfinite(float(value)) else 0.0 for value in samples))
+        silent = (self._silent_waveform if samples is self._samples else
+                  bool(samples) and samples.count(0.0) == len(samples))
+        if silent:
+            self._analysis_pending = None
+            self._discard_analysis = self._analysis_future is not None
+        self._poll_analysis()
+        if silent and self._silent_waveform and same_rate and len(samples) == len(self._samples) and revision > self._revision:
+            self._release_silent_spectrum()
+            self._fade_waveform_trails()
+            return
+        if revision < self._revision or not same_rate:
             self._waveform_trails.clear();self._waveform_path=None;self._waveform_path_key=None
             self._waveform_raster_key=None
         self._revision = int(revision)
-        self._sample_rate = max(1.0, float(sample_rate))
-        # OutputMeter already sanitized its published tuple before releasing
-        # the audio callback. Other callers retain the defensive conversion.
-        self._samples = (samples if finite_samples else
-                         tuple(float(value) if math.isfinite(float(value)) else 0.0
-                               for value in samples))
+        self._sample_rate = sample_rate
+        self._samples = samples
+        self._silent_waveform = silent
         self._update_spectrum()
         self.update()
 
+    def _fade_waveform_trails(self):
+        if self._waveform_trails:
+            now=time.monotonic()
+            self._waveform_trails=[(stamp,path) for stamp,path in self._waveform_trails
+                if now-stamp<self.WAVEFORM_TRAIL_SECONDS]
+            self.update()
+
+    def _release_silent_spectrum(self):
+        bins = self._bin_count_for_width(self._spectrum_width())
+        if len(self._spectrum) != bins or any(self._spectrum):
+            self._accept_spectrum([0.0] * bins)
+            self.update()
+
     def reset_waveform_history(self):
+        self._silent_waveform=False
         self._waveform_trails.clear();self._waveform_path=None
         self._waveform_path_key=None;self._waveform_geometry=None
         self._waveform_raster_key=None
@@ -7003,6 +7497,9 @@ class NativeAudioVisualizer(QWidget):
     def _update_spectrum(self):
         if self._analysis_closed:
             return
+        if self._silent_waveform:
+            self._release_silent_spectrum()
+            return
         # One running task plus one overwritten latest request: never enqueue
         # one task per display frame, resize event or audio callback.
         bin_count = self._bin_count_for_width(self._spectrum_width())
@@ -7017,7 +7514,8 @@ class NativeAudioVisualizer(QWidget):
             self._analysis_future = None
             targets, plan, self._analysis_thread_id = future.result()
             self._spectrum_plan = plan
-            if (len(targets) == self._bin_count_for_width(self._spectrum_width())
+            discard, self._discard_analysis = self._discard_analysis, False
+            if (not discard and len(targets) == self._bin_count_for_width(self._spectrum_width())
                     and (plan is None or plan[0][2] == self._sample_rate)):
                 self._accept_spectrum(targets)
                 self.update()
@@ -8163,6 +8661,7 @@ class NativeControlRow(QWidget):
             label_width=self.label_width, gap=self.column_gap,
             stacked=stacked,
         )
+        bind_field_enabled(self.slider, self.value)
         self.slider.setAccessibleName(label)
         install_effect_tooltip(tooltip, self, self.title, self.slider, self.value)
         if entry_kind:

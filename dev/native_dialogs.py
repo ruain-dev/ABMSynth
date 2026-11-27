@@ -11,6 +11,7 @@ import tempfile
 import queue
 from pathlib import Path
 from dataclasses import replace
+import json
 
 import audio_engine as ae
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal, QRegularExpression, QStandardPaths, QUrl, QObject, QItemSelectionModel, QItemSelection
@@ -18,39 +19,39 @@ from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPainterPath,
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLayout, QLineEdit, QMainWindow,
-    QMessageBox, QMenu, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem, QSlider,
+    QMessageBox, QMenu, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QListWidget, QListWidgetItem, QSlider,
     QSplitter, QStackedWidget, QStyle, QStyleOptionComboBox, QStyledItemDelegate, QTabWidget, QTableWidget,
     QTableWidgetItem, QToolButton, QVBoxLayout, QWidget, QTextBrowser, QPlainTextEdit,
  )
 from event_log import log_text
-from i18n import tr
+from i18n import dialog_action, tr
 from native_layout import (
-    reflow_card_columns,
+    reflow_card_columns, ContextActionLayout, FormCaptionLabel, FormRowLayout, bind_field_enabled,
     CARD_ROW_GAPS, FORM_ROW_HEIGHT, ElasticLabel, ElasticPanel, WidthMeasuredPanel, WrappingControlLayout,
     install_three_column_form_row, make_horizontally_elastic, set_layout,
     fit_dialog_contents, fit_plain_dialog_contents, align_form_labels,
-    control_row_layout, invalidate_layout_chain, bordered_page_layout, automatic_window_fit_allowed,
+    control_row_layout, control_grid_layout, card_grid_layout, card_stack_layout, invalidate_layout_chain, bordered_page_layout, automatic_window_fit_allowed,
 )
 from native_widgets import (
     DARK, LIGHT, INSTRUMENT_TABLE, INSTRUMENT_EXTRA_FIELDS, METRICS, AnimatedComboBox, InstrumentTableSpec, NativeCard, NativeDialog,
-    COLOR_THEMES, color_palette, widget_palette, disabled_control_color, refresh_native_pointer_feedback, set_native_cursor,
+    COLOR_THEMES, NativePaletteChoice, color_palette, widget_palette, disabled_control_color, refresh_native_pointer_feedback, set_native_cursor,
     connect_native_pointer_model, refresh_changed_pointer_feedback,
     EditableNumberLabel, NativeRotatedLabel, NativeSegmentedChoice, NativeSlider, NativeDecimalBox,
     NativeControlRow, NativeDisclosure, NativeInlineNumberEdit, NativeKnobField, NativeLayoutSnapshot, NativeMidiActivityBar, NativeNumberBox, NativeToggleSwitch, NativeWindowSizeMotion, MIDI_ACTIVITY_INTERVAL_MS,
     NativeTransportButton, NativeAuditionButton, NativeHoldButton, make_tuning_audition, make_instrument_audition, NativeMessageBox, NativeMenu, NativeRackButton, NativeRackList, NativeRowList, NativeFilterButton, NativeFXVisual, NativeOptionalLabel,
-    OutlineCheckBox, apply_native_text_metrics, present_numeric_selection, set_button_primary,
+    OutlineCheckBox, NativeRadioButton, NativeRadioChoice, apply_native_text_metrics, present_numeric_selection, set_button_primary,
     install_effect_tooltip, make_action_button, make_control_section, add_section_action, make_parameter_tabs, make_navigation_tabs, tooltip_display_text,
     set_channel_protocol_caption, paint_outline_check_indicator,
     transparent_scroll_area_stylesheet,
     set_transparent_scroll_content,
  )
-from settings import EnginePreferences, LIVE_PREFERENCE_FIELDS, RESTART_PREFERENCE_FIELDS, RESTART_REQUIRED_FIELDS, SAMPLE_RATES, RECORDING_EXTENSIONS, RECORDING_BITRATES, engine_ini_values, import_bmsynth_engine_values, read_bmsynth_ini, save_engine_preferences, update_sections, valid_recording_basename, recording_filename
+from settings import EnginePreferences, NWC_RESET_ACTIONS, LIVE_PREFERENCE_FIELDS, RESTART_PREFERENCE_FIELDS, RESTART_REQUIRED_FIELDS, SAMPLE_RATES, RECORDING_EXTENSIONS, RECORDING_BITRATES, engine_ini_values, import_bmsynth_engine_values, read_bmsynth_ini, save_engine_preferences, update_sections, valid_recording_basename, recording_filename
 from audio_output import AudioStartError, OUTPUT_TIMING_SETTINGS, output_timing_availability
 from soundfont_files import INSTRUMENT_VOLUME_MAX, PRESET_EXPRESSION_GROUPS, PRESET_EXPRESSION_RANGES, PresetOverride, SoundFontEntry, SoundFontGroup, load_sfg, save_sfg, save_instrument_export, resolve_effective_instruments, validate_group
 from soundfont_files import inspect_soundfont_controllers,SF2_CC_GENERATOR_NAMES, SoundFontMapping, resolve_mapped_instruments
 from soundfont_runtime import SoundFontActivity, SoundFontRuntimeError
 from windows_integration import is_enabled as is_windows_startup_enabled, set_enabled as set_windows_startup_enabled
-from effect_presentation import effect_tooltip, format_effect_value, audio_fx_parameter_tooltip, audio_fx_parameter_caption, audio_fx_parameter_value, FX_VISUAL_FAMILIES, drum_key_caption
+from effect_presentation import effect_tooltip, format_effect_value, audio_fx_parameter_tooltip, audio_fx_parameter_caption, audio_fx_parameter_value, FX_VISUAL_FAMILIES, drum_key_caption, CcValueRange
 from effect_control import RACK_BQF_KINDS,SYSTEM_RESET_RECEIVERS
 from midi_input_runtime import (AUXILIARY_CC, AUXILIARY_CC_DESTINATIONS, SOUNDFONT_MODULATOR_CC, NATIVE_ADDITIONAL_CC,
                                 DRUM_NEUTRAL, DRUM_PARAMETER_ORDER, DRUM_PARAMETERS, SCALE_PARAMETER, EXPRESSION_DEFAULTS,
@@ -234,6 +235,19 @@ class NativeAudioFXChannelBody(WidthMeasuredPanel):
         if event.size().width()!=event.oldSize().width():self.widthChanged.emit()
 
 
+class NativeAudioFXChoiceCell(WidthMeasuredPanel):
+    """Match knob column widths and measure the contents at the available width."""
+
+    def __init__(self, field):
+        super().__init__()
+        self.field = field
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(max(140, self.field.sizeHint().width()))
+        return hint
+
+
 class NativeAudioFXPanel(QWidget):
     """Compact rack navigation + cached parameter forms; no audio ownership."""
     changed = Signal(object)
@@ -259,6 +273,7 @@ class NativeAudioFXPanel(QWidget):
         self._committed_slots, self._committed_enabled = (), True
         self._pending_token = None
         self._cleanup_token = None
+        self._retired_requests = []
         self._preparing_labels = {}
         self._prepare_timer = QTimer(self)
         self._prepare_timer.setInterval(16)
@@ -333,7 +348,7 @@ class NativeAudioFXPanel(QWidget):
             for kind in kinds:
                 action = submenu.addAction(tr(f"audio_fx.kind.{kind}"))
                 action.setToolTip(self._effect_help(kind))
-                action.setData(kind); action.setEnabled(len(self.slots) < AUDIO_FX_MAX_SLOTS)
+                action.setData(kind); action.setEnabled(self.can_add_effect())
                 action.triggered.connect(lambda checked=False, kind=kind: self.add_effect(kind))
         return menu
 
@@ -375,7 +390,8 @@ class NativeAudioFXPanel(QWidget):
     def toggle_row(self, index):
         if 0 <= index < len(self.slots):
             self.selection.setCurrentRow(index)
-            self.toggle_effect(not self.slots[index].enabled)
+            mixed=bool(self.selection.item(index).data(Qt.UserRole+2))
+            self.toggle_effect(True if mixed else not self.slots[index].enabled)
 
     def drop_effect(self, identity, insertion):
         source = next((i for i, slot in enumerate(self.slots) if slot.identity == identity), -1)
@@ -391,6 +407,11 @@ class NativeAudioFXPanel(QWidget):
     def processing_enabled(self):
         """One positive enabled state in the UI, INI and native consumer."""
         return self.enabled_switch.isChecked()
+
+    def can_add_effect(self):
+        from effect_control import AUDIO_FX_MAX_SLOTS
+        capacity=getattr(self.effect_runtime,'can_add',None)
+        return capacity() if capacity else len(self.slots)<AUDIO_FX_MAX_SLOTS
 
     def restore_defaults(self):
         index = self.selection.currentRow()
@@ -433,6 +454,25 @@ class NativeAudioFXPanel(QWidget):
         self.foreign_hint.setVisible(bool(self._foreign))
         self.refresh(0 if self.slots else -1)
 
+    def load_slots(self,slots,enabled):
+        self.slots=tuple(slots)
+        self._committed_slots,self._committed_enabled=self.slots,bool(enabled)
+        self._pending_token=self._cleanup_token=None
+        self._prepare_timer.stop()
+        self._show_preparing(False)
+        self._blocked=True
+        self.enabled_switch.setChecked(enabled)
+        self._blocked=False
+        self._foreign=[]
+        self.foreign_hint.hide()
+        self.refresh(0 if self.slots else -1)
+        if self._retired_requests:self._prepare_timer.start()
+
+    def retire_pending_request(self):
+        if self._pending_token is not None:
+            self._retired_requests.append((self.effect_runtime,self._pending_token))
+            self._pending_token=None
+
     def ini_value(self):
         import json
         from effect_control import audio_fx_ini
@@ -444,7 +484,8 @@ class NativeAudioFXPanel(QWidget):
     def _publish(self, slots, selected, *, force_parameters=None):
         from effect_control import validate_audio_fx
         try:
-            slots = validate_audio_fx(slots)
+            validate=getattr(self.effect_runtime,'validate_slots',validate_audio_fx)
+            slots = validate(slots)
             edit=getattr(self.effect_runtime,'request_audio_fx_edit',None)
             if edit is not None:
                 token,result,slots=edit(slots,self.processing_enabled(),self.slots,force_parameters or {})
@@ -484,13 +525,22 @@ class NativeAudioFXPanel(QWidget):
         self._prepare_timer.stop(); self._show_preparing(False)
         self.changed.emit(self.slots)
         self._save()
+        if self._retired_requests:self._prepare_timer.start()
 
     def _poll_preparation(self):
+        remaining=[]
+        for binding,token in self._retired_requests:
+            result=binding.poll_audio_fx(token)
+            if result is None:remaining.append((binding,token))
+            elif result is False:self.owner.append_log(log_text('audio_fx.invalid'))
+        self._retired_requests=remaining
         if self._pending_token is None:
             if self._cleanup_token is not None:
                 result = self.effect_runtime.poll_audio_fx(self._cleanup_token)
                 if result is not None:
-                    self._cleanup_token = None; self._prepare_timer.stop()
+                    self._cleanup_token = None
+                    if not remaining:self._prepare_timer.stop()
+            elif not remaining:self._prepare_timer.stop()
             return
         result = self.effect_runtime.poll_audio_fx(self._pending_token)
         if result is None: return
@@ -505,6 +555,7 @@ class NativeAudioFXPanel(QWidget):
             self.refresh(next((i for i, slot in enumerate(self.slots) if slot.identity == selected_id), -1))
             self._prepare_timer.stop(); self._show_preparing(False)
             self.owner.append_log(log_text("audio_fx.invalid"))
+            if self._retired_requests:self._prepare_timer.start()
 
     def _show_preparing(self, preparing):
         for label in self._preparing_labels.values(): label.setVisible(preparing)
@@ -519,6 +570,7 @@ class NativeAudioFXPanel(QWidget):
     def add_effect(self, kind):
         from effect_control import AudioFXSlot
         from uuid import uuid4
+        if not self.can_add_effect():return
         asset = ""
         if kind == "convolution":
             asset, _filter = QFileDialog.getOpenFileName(self, tr("audio_fx.ir_choose"), "", tr("audio_fx.ir_filter"))
@@ -549,7 +601,7 @@ class NativeAudioFXPanel(QWidget):
         index = self.selection.currentRow()
         if index >= 0:
             slots = list(self.slots); slots[index] = replace(slots[index], enabled=checked)
-            self._publish(slots, index)
+            self._publish(slots, index,force_parameters={slots[index].identity:('_enabled',)})
 
     def set_parameter(self, parameter, value):
         self.set_parameters({parameter:value})
@@ -566,7 +618,10 @@ class NativeAudioFXPanel(QWidget):
             if slot.kind == "chorus_fx":
                 if 3 in changes: values[4] = max(values[4], values[3])
                 elif 4 in changes: values[3] = min(values[3], values[4])
-            if tuple(values)==slot.values:return
+            if tuple(values)==slot.values:
+                observed=getattr(self.effect_runtime,'parameter_values',None)
+                if observed is None or all(len(set(observed(slot.identity,number)))<2 for number in changes):
+                    return
             slots = list(self.slots); slots[index] = replace(slot, values=tuple(values))
             forced=(3,4) if slot.kind=='chorus_fx' and any(p in changes for p in (3,4)) else tuple(changes)
             self._publish(slots,index,force_parameters={slot.identity:forced})
@@ -599,7 +654,7 @@ class NativeAudioFXPanel(QWidget):
         self._show_parameter_cc(number,control,visual,point)
 
     def parameter_cc_menu(self,parameter,control):
-        from effect_control import AUDIO_FX_PARAMETERS,audio_fx_cc_bindings
+        from effect_control import AUDIO_FX_PARAMETERS,audio_fx_cc_bindings,audio_fx_cc_range
         from channel_audio_effects import channel_fx_cc_allowed
         row=self.selection.currentRow()
         if not 0<=row<len(self.slots):return None
@@ -607,7 +662,7 @@ class NativeAudioFXPanel(QWidget):
         origin_binding=self.effect_runtime
         source=audio_fx_cc_bindings(slot).get(spec.key)
         menu=NativeMenu(self)
-        assign=menu.addAction(tr('channel_editor.assign_cc'))
+        assign=menu.addAction(dialog_action(tr('channel_editor.assign_cc')))
         learn=menu.addAction(tr('channel_editor.cancel_learn') if source=='learn' else tr('channel_editor.learn_cc'))
         remove=menu.addAction(tr('channel_editor.audio_fx_cc_remove'))
         allowed=channel_fx_cc_allowed(slot,parameter)
@@ -615,24 +670,33 @@ class NativeAudioFXPanel(QWidget):
             action.setEnabled(allowed)
             if not allowed:action.setToolTip(tr('channel_editor.audio_fx_cc_manual'))
         remove.setEnabled(source is not None)
-        def publish(value):
+        def publish(value, value_range=None):
             if self.effect_runtime is not origin_binding:return
             context=self.parameter_context
             binding=origin_binding
-            token,accepted=binding.manager.assign_cc(binding.channel,slot.identity,parameter,value)
+            token,accepted=binding.assign_cc(slot.identity,parameter,value,value_range=value_range)
             if accepted is False:self.owner.append_log(log_text('channel_editor.cc_save_failed'))
+            previous=getattr(self,'_channel_cc_pending',None)
+            if previous is not None:
+                self._retired_requests.append((self._channel_cc_binding,previous))
+                self._prepare_timer.start()
             self._channel_cc_pending=token
+            self._channel_cc_binding=binding
             self._channel_cc_timer.start()
             context._refresh_channel_audio_effects()
-        def choose():
+        def choose(learning=False):
+            if self.effect_runtime is not origin_binding:
+                return
             context=self.parameter_context
             binding=(source,'audio_fx','',False) if type(source) is int else None
-            dialog=NativeMidiCcAssignmentDialog(context,'audio_fx',audio_fx_parameter_caption(slot.kind,spec.key),binding,audio_parameter=spec)
+            dialog=NativeMidiCcAssignmentDialog(context,'audio_fx',audio_fx_parameter_caption(slot.kind,spec.key),binding,
+                audio_parameter=spec, learning=learning, value_range=audio_fx_cc_range(slot, spec))
             try:
-                if dialog.exec()==QDialog.Accepted:publish(dialog.source.currentData())
+                if dialog.exec()==QDialog.Accepted:
+                    publish('learn' if learning else dialog.source.currentData(), dialog.selected_value_range())
             finally:dialog.deleteLater()
-        assign.triggered.connect(choose)
-        learn.triggered.connect(lambda:publish(None if source=='learn' else 'learn'))
+        assign.triggered.connect(lambda _checked=False: choose())
+        learn.triggered.connect(lambda:publish(None) if source=='learn' else choose(learning=True))
         remove.triggered.connect(lambda:publish('clear'))
         return menu
 
@@ -644,9 +708,10 @@ class NativeAudioFXPanel(QWidget):
 
     def _poll_channel_cc(self):
         token=getattr(self,'_channel_cc_pending',None)
-        result=self.effect_runtime.poll_audio_fx(token) if token is not None else True
+        result=self._channel_cc_binding.poll_audio_fx(token) if token is not None else True
         if result is None:return
         if result is False:self.owner.append_log(log_text('channel_editor.cc_save_failed'))
+        self._channel_cc_pending=None
         self._channel_cc_timer.stop();self.parameter_context._refresh_channel_audio_effects()
 
     def _install_parameter_cc(self,parameter,control):
@@ -657,7 +722,10 @@ class NativeAudioFXPanel(QWidget):
         if isinstance(control,NativeKnobField):
             control.add_cc_identity()
             surfaces=(control.knob,control.title,control.value,control.cc_badge,control.cc_status)
-        else:surfaces=(control,*((control._channel_cc_caption,control._channel_cc_status) if hasattr(control,'_channel_cc_caption') else ()))
+        else:
+            options = control.buttons if isinstance(control, NativeRadioChoice) else ()
+            captions = (control._channel_cc_caption, control._channel_cc_status) if hasattr(control, '_channel_cc_caption') else ()
+            surfaces = (control, *options, *captions)
         for source in surfaces:
             source.setContextMenuPolicy(Qt.CustomContextMenu)
             source.customContextMenuRequested.connect(lambda point,parameter=parameter,control=control,source=source:
@@ -683,11 +751,13 @@ class NativeAudioFXPanel(QWidget):
             if item.text() != caption: item.setText(caption)
             if item.data(Qt.UserRole) != slot.identity: item.setData(Qt.UserRole, slot.identity)
             if item.data(Qt.UserRole+1) != slot.enabled: item.setData(Qt.UserRole+1, slot.enabled)
+            states=getattr(self.effect_runtime,'slot_enabled_values',lambda *_:(slot.enabled,))(slot.identity)
+            item.setData(Qt.UserRole+2,len(set(states))>1)
             if structural: self.selection.addItem(item)
         self._refresh_slot_information()
         self.selection.setCurrentRow(selected)
         self.selection.blockSignals(blocked)
-        self.add_button.setEnabled(len(self.slots) < AUDIO_FX_MAX_SLOTS)
+        self.add_button.setEnabled(self.can_add_effect())
         valid = 0 <= selected < len(self.slots)
         self.remove_button.setEnabled(valid)
         self.up_button.setEnabled(valid and selected > 0)
@@ -706,6 +776,7 @@ class NativeAudioFXPanel(QWidget):
             # load_ini may stop an old preparation before rebuilding rows.
             if item is None or item.data(Qt.UserRole) != slot.identity: continue
             state = (tr("audio_fx.preparing") if self._pending_token is not None else
+                     tr('channel_editor.audio_fx_mixed_state') if item.data(Qt.UserRole+2) else
                      tr("audio_fx.inactive") if slot.enabled and not self.enabled_switch.isChecked() else
                      tr("audio_fx.active") if slot.enabled else tr("common.off"))
             accessible = tr("audio_fx.slot", index=index+1,
@@ -768,6 +839,7 @@ class NativeAudioFXPanel(QWidget):
         geometry_changed = geometry_key != getattr(self, '_editor_geometry_key', None)
         if slot.kind not in self._forms:
             page = QWidget(); layout = set_layout(QVBoxLayout(page), 0, CARD_ROW_GAPS["effects"])
+            layout.setAlignment(Qt.AlignTop)
             description = ElasticLabel(tr(f"audio_fx.help.{slot.kind}")); description.setWordWrap(True)
             description.setObjectName("AudioFXDescription")
             description.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -776,7 +848,7 @@ class NativeAudioFXPanel(QWidget):
                 warning = ElasticLabel(tr(f"audio_fx.notice.{slot.kind}")); warning.setWordWrap(True)
                 warning.setObjectName("AudioFXNotice"); layout.addWidget(warning)
             if slot.kind == "convolution":
-                self.ir_button = make_action_button(tr("audio_fx.ir_choose"), self.choose_impulse)
+                self.ir_button = make_action_button(dialog_action(tr("audio_fx.ir_choose")), self.choose_impulse)
                 layout.addWidget(self.ir_button)
             if slot.kind in FX_VISUAL_FAMILIES:
                 visual=NativeFXVisual(page)
@@ -797,8 +869,14 @@ class NativeAudioFXPanel(QWidget):
             action_layout.addWidget(reset); action_layout.addStretch(1)
             from native_widgets import make_effect_audition
             if self.channel_presentation:
-                preview=make_instrument_audition(self.owner,lambda:None if self.parameter_context._global_scope()
-                    else self.owner.audition_request(channel=self.parameter_context.selected_channel()),actions)
+                def preview_request():
+                    channel=self.parameter_context.selected_channel()
+                    if self.parameter_context._global_scope():
+                        selected=self.selection.currentRow()
+                        if not 0<=selected<len(self.slots):return None
+                        channel=self.effect_runtime.preview_channel(self.slots[selected].identity)
+                    return self.owner.audition_request(channel=channel)
+                preview=make_instrument_audition(self.owner,preview_request,actions)
             else:preview=make_effect_audition(self.owner,lambda:self.slots[self.selection.currentRow()].kind
                 if 0<=self.selection.currentRow()<len(self.slots) else 'output',actions)
             action_layout.insertWidget(1,preview)
@@ -826,27 +904,40 @@ class NativeAudioFXPanel(QWidget):
                 row_layout = ((advanced_layout if number in advanced else parameter_layout)
                               if self.channel_presentation else disclosure.content_layout if number in advanced else layout)
                 if parameter.choices:
-                    combo = AnimatedComboBox()
-                    combo.setAccessibleName(caption)
-                    for choice in parameter.choices:
-                        combo.addItem(tr("audio_fx.value", value=choice.replace("-", "\u2212"), unit=parameter.unit)
-                            if parameter.key == "phase" else choice if choice.isdecimal() else tr(f"audio_fx.choice.{choice}"))
-                    combo.currentIndexChanged.connect(lambda value, number=number, low=parameter.minimum, step=parameter.step:
+                    captions = tuple(tr("audio_fx.value", value=choice.replace("-", "\u2212"), unit=parameter.unit)
+                        if parameter.key == "phase" else choice if choice.isdecimal() else tr(f"audio_fx.choice.{choice}")
+                        for choice in parameter.choices)
+                    inline = parameter.key == 'saturation_quality' or (parameter.key == 'waveform' and
+                        slot.kind in ('flanger', 'chorus_dx8', 'gargle', 'tremolo'))
+                    if inline:
+                        field = NativeRadioChoice(tuple(enumerate(captions)))
+                        changed = field.valueChanged
+                    else:
+                        field = AnimatedComboBox()
+                        field.addItems(captions)
+                        changed = field.currentIndexChanged
+                    field.setAccessibleName(caption)
+                    changed.connect(lambda value, number=number, low=parameter.minimum, step=parameter.step:
                         self.set_parameter(number, low + value * step))
                     if self.channel_presentation:
-                        row=ElasticPanel(preferred_width=140)
+                        row = NativeAudioFXChoiceCell(field)
                         choice_layout=set_layout(QVBoxLayout(row),0,4)
-                        label=ElasticLabel(caption);label.setAlignment(Qt.AlignCenter)
-                        label.setObjectName('FieldLabel')
+                        label=FormCaptionLabel(caption,field);label.setAlignment(Qt.AlignCenter)
                         status=ElasticLabel('');status.setObjectName('MutedLabel');status.setAlignment(Qt.AlignCenter)
-                        combo._channel_cc_caption=label;combo._channel_cc_status=status
-                        choice_layout.addWidget(label);choice_layout.addWidget(combo);choice_layout.addWidget(status);choice_layout.addStretch(1)
+                        bind_field_enabled(field,status)
+                        field._channel_cc_caption=label;field._channel_cc_status=status
+                        choice_layout.addWidget(label);choice_layout.addWidget(field);choice_layout.addWidget(status);choice_layout.addStretch(1)
+                        if inline:
+                            make_horizontally_elastic(field, QSizePolicy.Preferred)
+                    elif inline:
+                        row = midi_form_row(caption, field)
                     else:
-                        row = QWidget(); install_three_column_form_row(row, caption, combo, ElasticPanel(),
+                        row = QWidget(); install_three_column_form_row(row, caption, field, ElasticPanel(),
                             label_width=METRICS["form_label_width"], gap=METRICS["form_column_gap"])
-                    install_effect_tooltip(tooltip, row, combo)
-                    row_layout.addWidget(row); controls.append(combo)
-                    self._install_parameter_cc(number,combo)
+                    options = field.buttons if inline else ()
+                    install_effect_tooltip(tooltip, row, field, *options)
+                    row_layout.addWidget(row); controls.append(field)
+                    self._install_parameter_cc(number,field)
                 else:
                     decimals = max(0, -round(math.log10(parameter.step)))
                     def formatter(value, parameter=parameter):return audio_fx_parameter_value(parameter,value)
@@ -897,37 +988,60 @@ class NativeAudioFXPanel(QWidget):
         self.preparing_hint = self._preparing_labels[slot.kind]
         self._blocked = True
         try:
-            for parameter, control, value in zip(AUDIO_FX_PARAMETERS[slot.kind], controls, slot.values):
+            for number,(parameter, control, value) in enumerate(zip(AUDIO_FX_PARAMETERS[slot.kind], controls, slot.values)):
                 source=bindings.get(parameter.key)
+                sources=getattr(self.effect_runtime,'cc_sources',lambda *_:(source,))(slot.identity,parameter.key)
+                mixed_source=len(set(sources))>1
                 if self.channel_presentation and isinstance(control,NativeKnobField):
-                    set_channel_protocol_caption(control,f'CC#{source:03d}' if type(source) is int else '')
-                    control.cc_status.set_text(tr('channel_editor.audio_fx_cc_learning_badge') if source=='learn' else '')
+                    set_channel_protocol_caption(control,tr('channel_editor.mixed_value') if mixed_source else f'CC#{source:03d}' if type(source) is int else '')
+                    control.cc_status.set_text(tr('channel_editor.audio_fx_cc_learning_badge') if source=='learn' and not mixed_source else '')
                     control.set_theme(self.owner._dark)
                     tooltip=audio_fx_parameter_tooltip(slot.kind,parameter.key)
                     if source is not None:tooltip=tr('channel_editor.audio_fx_cc_status',description=tooltip,
                         source=tr('channel_editor.learning_status') if source=='learn' else manual_cc_display(source))
+                    if mixed_source:tooltip=tr('channel_editor.audio_fx_cc_mixed_status',description=tooltip)
                     install_effect_tooltip(tooltip,control,control.title,control.knob,control.value,control.cc_badge)
                 elif self.channel_presentation:
-                    control._channel_cc_status.setVisible(source is not None)
-                    control._channel_cc_status.setText(tr('channel_editor.audio_fx_cc_learning_badge') if source=='learn'
+                    control._channel_cc_status.setVisible(source is not None or mixed_source)
+                    control._channel_cc_status.setText(tr('channel_editor.mixed_value') if mixed_source else tr('channel_editor.audio_fx_cc_learning_badge') if source=='learn'
                         else f'CC#{source:03d}' if type(source) is int else '')
                     tooltip=audio_fx_parameter_tooltip(slot.kind,parameter.key)
                     if source is not None:tooltip=tr('channel_editor.audio_fx_cc_status',description=tooltip,
                         source=tr('channel_editor.learning_status') if source=='learn' else manual_cc_display(source))
-                    install_effect_tooltip(tooltip,control,control._channel_cc_caption,control._channel_cc_status)
+                    if mixed_source:tooltip=tr('channel_editor.audio_fx_cc_mixed_status',description=tooltip)
+                    options = control.buttons if isinstance(control, NativeRadioChoice) else ()
+                    install_effect_tooltip(tooltip,control,control._channel_cc_caption,control._channel_cc_status,*options)
                 if isinstance(control, (NativeControlRow,NativeKnobField)):
                     if isinstance(control,NativeControlRow) and slot.kind in RACK_BQF_KINDS and control is controls[0]:
                         control.set_maximum(self._filter_ceiling())
                     control.set(value, False)
+                    values=getattr(self.effect_runtime,'parameter_values',lambda *_:(value,))(slot.identity,number)
+                    control.set_mixed(len(set(values))>1)
                 else:
                     blocked = control.blockSignals(True)
-                    control.setCurrentIndex(round((value - parameter.minimum) / parameter.step))
+                    values=getattr(self.effect_runtime,'parameter_values',lambda *_:(value,))(slot.identity,number)
+                    mixed = len(set(values)) > 1
+                    index = round((value - parameter.minimum) / parameter.step)
+                    if isinstance(control, NativeRadioChoice):
+                        if mixed:
+                            control.clear_selection()
+                            status = control._channel_cc_status
+                            note = tr('channel_editor.mixed_value')
+                            if not status.text():
+                                status.setText(note)
+                            status.show()
+                            control.setAccessibleDescription(f'{note}. {control.accessibleDescription()}')
+                        else:
+                            control.setValue(index)
+                    else:
+                        control.setPlaceholderText(tr('channel_editor.mixed_value'))
+                        control.setCurrentIndex(-1 if mixed else index)
                     control.blockSignals(blocked)
         finally:
             self._blocked = False
         self.stack.setCurrentWidget(page)
         if slot.kind == "convolution":
-            self.ir_button.setText(Path(slot.asset).name if slot.asset else tr("audio_fx.ir_choose"))
+            self.ir_button.setText(Path(slot.asset).name if slot.asset else dialog_action(tr("audio_fx.ir_choose")))
             self.ir_button.setToolTip(slot.asset)
         self._editor_geometry_key = geometry_key
         if geometry_changed:
@@ -1043,7 +1157,7 @@ class NativeChannelScopeChoice(NativeSegmentedChoice):
 class NativeMidiCcAssignmentDialog(NativeChannelMappingDialog):
     """One CC/scope chooser, with an audible destination for auxiliary slots."""
 
-    def __init__(self, parent, target, label, binding, *, learning=False, audio_parameter=None):
+    def __init__(self, parent, target, label, binding, *, learning=False, audio_parameter=None, value_range=None):
         if target == "mode":
             raise ValueError("Voice mode uses native channel-mode messages")
         super().__init__(parent)
@@ -1110,6 +1224,27 @@ class NativeMidiCcAssignmentDialog(NativeChannelMappingDialog):
                 self.destination.setCurrentIndex(-1)
         else:
             self.destination.hide()
+        self._range_target = target
+        self._audio_parameter = audio_parameter
+        self.custom_range = NativeToggleSwitch("")
+        root.addWidget(midi_form_row(tr('channel_editor.cc_custom_range'), self.custom_range,
+                                    tr('channel_editor.cc_range_tip'), wrap=False))
+        self.range_fields = {}
+        range_panel = QWidget()
+        range_layout = control_grid_layout(range_panel)
+        for column, key in enumerate(('minimum', 'maximum', 'step')):
+            label = QLabel(tr('channel_editor.cc_range_' + key))
+            label.setAlignment(Qt.AlignCenter)
+            field = NativeDecimalBox(-100000, 100000, label.text())
+            field.setMinimumWidth(0)
+            field.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            range_layout.addWidget(label, 0, column)
+            range_layout.addWidget(field, 1, column)
+            range_layout.setColumnStretch(column, 1)
+            self.range_fields[key] = field
+        root.addWidget(range_panel)
+        self._range_panel = range_panel
+        self._initial_range = value_range if audio_parameter is not None else ae.runtime.midi_learn.value_range(channel, target)
         self.precision_hint = QLabel()
         self.precision_hint.setWordWrap(True)
         self.precision_hint.setMinimumWidth(0)
@@ -1118,21 +1253,36 @@ class NativeMidiCcAssignmentDialog(NativeChannelMappingDialog):
         root.addWidget(self.precision_hint)
         def update_precision(_index=None):
             selected = self.destination.currentData() if target.startswith("aux_") else target
-            self.precision_hint.setVisible(selected is not None)
-            if selected is None:
-                self.precision_hint.clear()
-            else:
-                if audio_parameter is not None:
-                    from effect_control import audio_fx_cc_value
-                    positions=len({audio_fx_cc_value(audio_parameter,value) for value in range(128)})
-                else:positions = len({channel_cc_target_value(selected, value) for value in range(128)})
-                self.precision_hint.setText(tr('channel_editor.audio_fx_cc_precision' if audio_parameter is not None
-                    else "channel_editor.cc_precision_hint", positions=positions))
+            parameter = audio_parameter or CHANNEL_PARAMETERS.get(selected)
+            enabled = parameter is not None and selected not in CHANNEL_MODE_SWITCHES
+            self.custom_range.setEnabled(enabled)
+            self._range_panel.setEnabled(enabled and self.custom_range.isChecked())
+            if parameter is not None:
+                precision = parameter.step if audio_parameter else 1
+                domain = parameter.entry_domain
+                entry_step = precision / domain.scale
+                initial = self._initial_range
+                for key, value in zip(('minimum', 'maximum', 'step'),
+                        (parameter.minimum, parameter.maximum, precision) if initial is None else
+                        (initial.minimum, initial.maximum, initial.step)):
+                    field = self.range_fields[key]
+                    field.setSuffix(' cent' if domain.kind == 'cents' else '')
+                    field.setDecimals(domain.decimals)
+                    field.setRange(entry_step if key == 'step' else domain.minimum,
+                                   domain.maximum - domain.minimum if key == 'step' else domain.maximum)
+                    field.setSingleStep(entry_step)
+                    field.setValue(value / domain.scale if key == 'step' else domain.to_entry(value))
+                self._initial_range = None
+            self._refresh_precision_hint()
             if self.isVisible():
                 invalidate_layout_chain(self.precision_hint)
                 fit_plain_dialog_contents(self,grow_only=True)
         self.destination.currentIndexChanged.connect(update_precision)
         update_precision()
+        has_range = (value_range is not None if audio_parameter is not None else
+                     ae.runtime.midi_learn.value_range(channel, target) is not None)
+        self.custom_range.setChecked(has_range)
+        self._range_panel.setEnabled(self.custom_range.isEnabled() and self.custom_range.isChecked())
         self.scope = NativeChannelScopeChoice(all_channels=bool(binding and binding[3]))
         if parent._global_scope():
             self.scope.set_all_channels(True)
@@ -1149,6 +1299,9 @@ class NativeMidiCcAssignmentDialog(NativeChannelMappingDialog):
         self.source.currentIndexChanged.connect(self._update_confirmation)
         self.destination.currentIndexChanged.connect(self._update_confirmation)
         self._update_confirmation()
+        self.custom_range.toggled.connect(self._range_enabled_changed)
+        for field in self.range_fields.values():
+            field.valueChanged.connect(self._update_confirmation)
         footer.addWidget(self.confirm)
         footer.addWidget(make_action_button(tr("common.cancel"), self.reject))
         root.addLayout(footer)
@@ -1158,10 +1311,51 @@ class NativeMidiCcAssignmentDialog(NativeChannelMappingDialog):
 
     def _update_confirmation(self, _index=None):
         self.confirm.setEnabled(self._valid_selection())
+        self._refresh_precision_hint()
+
+    def _refresh_precision_hint(self):
+        selected = self.destination.currentData() if self._auxiliary else self._range_target
+        self.precision_hint.setVisible(selected is not None)
+        if selected is None:
+            self.precision_hint.clear()
+            return
+        try:
+            value_range = self.selected_value_range()
+        except ValueError:
+            self.precision_hint.setText(tr('channel_editor.cc_range_invalid'))
+            return
+        if value_range is not None:
+            values = {value_range.value(value) for value in range(128)}
+        elif self._audio_parameter is not None:
+            from effect_control import audio_fx_cc_value
+            values = {audio_fx_cc_value(self._audio_parameter, value) for value in range(128)}
+        else:
+            values = {channel_cc_target_value(selected, value) for value in range(128)}
+        self.precision_hint.setText(tr('channel_editor.cc_range_precision', positions=len(values)))
+
+    def _range_enabled_changed(self, checked):
+        self._range_panel.setEnabled(checked and self.custom_range.isEnabled())
+        self._update_confirmation()
 
     def _valid_selection(self):
+        try:
+            self.selected_value_range()
+        except ValueError:
+            return False
         return ((self._learning or self.source.currentData() is not None) and
                 (not self._auxiliary or self.destination.currentData() is not None))
+
+    def selected_value_range(self):
+        if not self.custom_range.isChecked() or not self.custom_range.isEnabled():
+            return None
+        parameter = self._audio_parameter or CHANNEL_PARAMETERS.get(
+            self.destination.currentData() if self._auxiliary else self._range_target)
+        domain = parameter.entry_domain
+        value_range = CcValueRange(domain.to_raw(self.range_fields['minimum'].value()),
+            domain.to_raw(self.range_fields['maximum'].value()),
+            self.range_fields['step'].value() * domain.scale)
+        return value_range.validate(parameter.minimum, parameter.maximum,
+                                    parameter.step if self._audio_parameter else 1)
 
     def accept(self):
         # Enter and programmatic acceptance must obey the same validation as
@@ -1236,7 +1430,7 @@ class NativeChannelResetDefaultsDialog(NativeDialog):
                     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     item.setToolTip(text)
                     if current is not None and current != baseline:
-                        item.setForeground(QColor(widget_palette(parent.owner).accent))
+                        item.setForeground(QColor(widget_palette(parent.owner).accent_ink))
                     self.table.setItem(row, column, item)
                 choice = AnimatedComboBox(self.table)
                 choice.setAccessibleName(label)
@@ -1269,7 +1463,7 @@ class NativeChannelResetDefaultsDialog(NativeDialog):
                     for column,text in ((1,f'{channel+1:02d}'),(2,label),
                             (3,audio_fx_parameter_value(parameter,parameter.initial)),(4,audio_fx_parameter_value(parameter,value))):
                         item=QTableWidgetItem(text);item.setTextAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-                        if value!=parameter.initial:item.setForeground(QColor(widget_palette(parent.owner).accent))
+                        if value!=parameter.initial:item.setForeground(QColor(widget_palette(parent.owner).accent_ink))
                         self.table.setItem(row,column,item)
                     choice=AnimatedComboBox(self.table);choice.setAccessibleName(label)
                     choice.setObjectName('NativeTableChoice');choice.setFixedHeight(INSTRUMENT_TABLE.row_height)
@@ -1453,7 +1647,7 @@ class NativePerformanceDialog(NativeDialog):
         self.cc_reset_all = make_action_button(
             tr("channel_editor.cc_reset_all"), lambda: self._reset_cc(True))
         self.reset_defaults_button = make_action_button(
-            tr("channel_editor.reset_defaults"), self._edit_reset_defaults)
+            dialog_action(tr("channel_editor.reset_defaults")), self._edit_reset_defaults)
         self.reset_defaults_button.setToolTip(tr("channel_editor.reset_defaults_hint"))
         channel_buttons.addWidget(self.reset_defaults_button)
         for button in (self.cc_reset_channel, self.cc_reset_all):
@@ -1501,6 +1695,7 @@ class NativePerformanceDialog(NativeDialog):
             column_layout=set_layout(QVBoxLayout(panel),0,4)
             label = ElasticLabel(tr(f"channel_editor.{caption}"))
             label.setObjectName("MutedLabel")
+            bind_field_enabled(control,label)
             column_layout.addWidget(label)
             control.setMinimumWidth(0)
             control.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -1558,12 +1753,10 @@ class NativePerformanceDialog(NativeDialog):
         self.channel_editor_card = editor_card
         editor_card.setMinimumWidth(0)
         editor_card.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        editor_layout = set_layout(QVBoxLayout(editor_card),
-            header.content_insets(), 8)
-        editor_layout.setAlignment(Qt.AlignTop)
+        editor_layout = card_stack_layout(editor_card, margins=header.content_insets())
         live_panel = QWidget()
         live_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        live_layout = set_layout(QGridLayout(live_panel), 0, 8)
+        live_layout = card_grid_layout(live_panel)
         self.channel_mixer_panel = live_panel
         self._mixer_grid = live_layout
         self._mixer_sections = {}
@@ -1602,7 +1795,7 @@ class NativePerformanceDialog(NativeDialog):
         editor_layout.addWidget(live_panel)
         expression_layout.addWidget(editor_card)
 
-        self.expression_group_grid = set_layout(QGridLayout(), 0, 8)
+        self.expression_group_grid = card_grid_layout()
         self.expression_group_grid.setAlignment(Qt.AlignTop)
         self.expression_groups = []
         self._group_controls = {}
@@ -1689,6 +1882,9 @@ class NativePerformanceDialog(NativeDialog):
              self._group_controls)[group].append(control)
             self._install_midi_learn(control.knob, field)
             self.expression_controls[field] = control
+        tuning_section = self.expression_groups[tuple(self._group_controls).index('tuning')]
+        self.fine_tuning_units = self.expression_controls['fine_tuning'].tuning_unit_choice()
+        add_section_action(tuning_section, self.fine_tuning_units)
         self.performance_rows.remove(self.expression_controls["expression_level"])
         self.performance_rows.append(self.expression_controls["expression_level"])
         self.pedal_switches = {}
@@ -1713,13 +1909,7 @@ class NativePerformanceDialog(NativeDialog):
         pressure.set_theme(self.owner._dark)
         self._group_controls["channel_pressure_routes"].insert(0, pressure)
         self.channel_pressure_control = pressure
-        pressure.title.set_multiline_gap(2)
         pressure.title.set_preferred_tracking(.5)
-        for control in self._group_controls["channel_pressure_routes"]:
-            control.title.setFixedHeight(28)
-        for controls in self._mixer_section_controls.values():
-            for control in controls:
-                control.title.setFixedHeight(28)
         self._install_midi_learn(pressure.knob, "channel_pressure")
         self.poly_pressure_note = AnimatedComboBox(self)
         self.poly_pressure_note.setProperty("compactChannelField", True)
@@ -1738,7 +1928,6 @@ class NativePerformanceDialog(NativeDialog):
                                   self.poly_pressure_note.currentData()),
         )
         self.poly_pressure_control.set_theme(self.owner._dark)
-        self.poly_pressure_control.title.set_multiline_gap(2)
         self.poly_pressure_control.title.set_preferred_tracking(.5)
         self._install_midi_learn(self.poly_pressure_control.knob, "key_pressure")
         note_slot = ElasticPanel(preferred_width=self.poly_pressure_note.sizeHint().width())
@@ -1751,8 +1940,6 @@ class NativePerformanceDialog(NativeDialog):
         poly_header = self.section_disclosures["key_pressure_routes"].header_layout
         poly_header.insertWidget(poly_header.count() - 1, note_slot)
         self._group_controls["key_pressure_routes"].insert(0, self.poly_pressure_control)
-        for control in self._group_controls["key_pressure_routes"]:
-            control.title.setFixedHeight(28)
         self.poly_pressure_note.currentIndexChanged.connect(self._poly_pressure_key_changed)
         self.auxiliary_cc_controls = {}
         for number in AUXILIARY_CC:
@@ -1767,7 +1954,6 @@ class NativePerformanceDialog(NativeDialog):
             control.set_theme(self.owner._dark)
             self._install_midi_learn(control.knob, f"aux_{number}")
             if number==42:
-                control.title.setFixedHeight(28)
                 mix=self._mixer_section_controls["mix"]
                 mix[:]=[mix[0],mix[2],mix[1],control]
             else:
@@ -1776,8 +1962,6 @@ class NativePerformanceDialog(NativeDialog):
             self.auxiliary_cc_controls[number] = control
         font_controller_index(self.owner).changed.connect(self._refresh_midi_learn_indicators)
         for key, section in self.section_disclosures.items():
-            for control in self._group_controls[key]:
-                control.title.setFixedHeight(28)
             if key in ("channel_pressure_routes", "key_pressure_routes"):
                 separator = QFrame()
                 separator.setObjectName("ChannelEditorInputSeparator")
@@ -1847,30 +2031,38 @@ class NativePerformanceDialog(NativeDialog):
         manager=ae.runtime.stream_effects.channel_fx
         manager.sync_midi()
         channel=self.selected_channel();global_scope=self._global_scope()
-        self.channel_audio_section.setToolTip(tr('channel_editor.audio_fx_select_channel') if global_scope else '')
-        context=(channel,ae.runtime.stream_generation,manager.revision)
+        scope=self.selected_channels() if global_scope else channel
+        self.channel_audio_section.setToolTip(tr('channel_editor.audio_fx_global_help') if global_scope else '')
+        context=(scope,ae.runtime.stream_generation,manager.revision)
         if self._channel_audio_context!=context:
-            slots,enabled=manager.snapshot(channel)
-            from effect_control import audio_fx_ini
             old=self._channel_audio_context
             if old is None or old[:2]!=context[:2]:
+                self.channel_audio_panel.retire_pending_request()
                 for _page,controls in self.channel_audio_panel._forms.values():
                     for control in controls:
                         if isinstance(control,(NativeKnobField,NativeControlRow)):control.value.cancel_editor()
-                self.channel_audio_panel.effect_runtime=manager.binding(channel)
-                self.channel_audio_panel.load_ini(audio_fx_ini(slots),enabled)
+                binding=manager.binding(scope)
+                self.channel_audio_panel.effect_runtime=binding
+                slots,enabled=binding.snapshot() if global_scope else manager.snapshot(channel)
+                self.channel_audio_panel.load_slots(slots,enabled)
                 self._channel_audio_context=context
             elif self.channel_audio_panel._pending_token is None:
                 panel=self.channel_audio_panel
-                if (audio_fx_ini(panel._committed_slots),panel._committed_enabled)!=(audio_fx_ini(slots),enabled):
+                slots,enabled=panel.effect_runtime.snapshot() if global_scope else manager.snapshot(channel)
+                from effect_control import audio_fx_ini
+                if global_scope or ((audio_fx_ini(panel._committed_slots),panel._committed_enabled) !=
+                                    (audio_fx_ini(slots),enabled)):
                     selected=panel.selection.currentRow()
                     panel.slots=panel._committed_slots=slots;panel._committed_enabled=enabled
                     panel._blocked=True
                     panel.enabled_switch.setChecked(enabled);panel._blocked=False
                     panel.refresh(min(selected,len(slots)-1))
                 self._channel_audio_context=context
-        self.channel_audio_panel.setEnabled(not global_scope)
-        self.channel_audio_notice.setVisible(not global_scope and bool(ae.runtime.addresses.drums[channel]))
+        self.channel_audio_panel.setEnabled(True)
+        mixed=getattr(self.channel_audio_panel.effect_runtime,'enabled_mixed',lambda:False)()
+        self.channel_audio_panel.enabled_switch.setProperty('mixedValue',mixed)
+        self.channel_audio_panel.enabled_switch.update()
+        self.channel_audio_notice.setVisible(any(ae.runtime.addresses.drums[ch] for ch in self.selected_channels()))
 
     @staticmethod
     def _channel_section(title_text, tooltip=None, *, collapsible=False):
@@ -2036,6 +2228,7 @@ class NativePerformanceDialog(NativeDialog):
         cluster_layout.addWidget(balance)
         field.cc_status = balance
         field.cc_control = control
+        bind_field_enabled(control,title,field.cc_badge,balance)
         field.cc_cluster = cluster
         slot_layout.addWidget(cluster, 0, Qt.AlignCenter)
         field.title = title
@@ -2488,12 +2681,14 @@ class NativePerformanceDialog(NativeDialog):
             raise RuntimeError("CC control has no presentation field")
         if isinstance(field, NativeKnobField):
             field.add_cc_identity()
+        # Knobs and switches share the same caption/control row baselines.
+        # A two-line mapping name must not move or clip the control below it.
+        field.title.setFixedHeight(28)
         field.setAttribute(Qt.WA_StyledBackground, True)
         field.cc_badge.set_theme(self.owner._dark)
         self._cc_fields[target] = widget, field, field.title.text()
-        # Match the existing pressure title's measured ink spacing. Standard
-        # one-line captions are unchanged; a derived connection is two lines
-        # inside the shared 28px caption slot, not Qt's 34px line boxes.
+        # Two-line mapping captions use measured ink spacing rather than
+        # Qt's taller line boxes inside the channel-knob caption slot.
         field.title.set_multiline_gap(2)
         # Both protocol caption and title offer the same context actions.
         for surface in (field.title, field.cc_badge, *((field.value,) if isinstance(field, NativeKnobField) else ())):
@@ -2514,18 +2709,18 @@ class NativePerformanceDialog(NativeDialog):
         if chosen is assign:
             request = self._request_manual_cc(widget, target)
             if request is not None:
-                number, destination, all_channels = request
+                number, destination, all_channels, *ranges = request
                 ae.runtime.midi_learn.assign(channel, target, number,
-                    destination=destination, all_channels=all_channels)
+                    destination=destination, all_channels=all_channels, value_range=ranges[0] if ranges else None)
         elif chosen is learn:
             if pending == (channel, target):
                 ae.runtime.midi_learn.cancel()
             else:
                 request = self._request_manual_cc(widget, target, learning=True)
                 if request is not None:
-                    _number, destination, all_channels = request
+                    _number, destination, all_channels, *ranges = request
                     ae.runtime.midi_learn.arm(channel, target,
-                        destination=destination, all_channels=all_channels)
+                        destination=destination, all_channels=all_channels, value_range=ranges[0] if ranges else None)
         elif function is not None and chosen is function:
             self._request_function_mapping(widget, target)
         elif chosen is restore:
@@ -2535,7 +2730,7 @@ class NativePerformanceDialog(NativeDialog):
 
     def _control_mapping_menu(self, target):
         menu, assign, learn = self._create_midi_learn_menu()
-        function = menu.addAction(tr("channel_editor.assign_function")) if (
+        function = menu.addAction(dialog_action(tr("channel_editor.assign_function"))) if (
             target in CHANNEL_FUNCTION_TARGETS or target.startswith("aux_")) else None
         menu.addSeparator()
         restore = menu.addAction(tr("channel_editor.restore_control_mapping"))
@@ -2563,9 +2758,9 @@ class NativePerformanceDialog(NativeDialog):
             # destination, so use the SAME chooser, not a second policy layer.
             request = self._request_manual_cc(widget, target)
             if request is not None:
-                number, destination, all_channels = request
+                number, destination, all_channels, *ranges = request
                 ae.runtime.midi_learn.assign(self.selected_channels()[0], target, number,
-                    destination=destination, all_channels=all_channels)
+                    destination=destination, all_channels=all_channels, value_range=ranges[0] if ranges else None)
             return
         dialog = NativeChannelMappingDialog(self)
         dialog.setWindowTitle(tr("channel_editor.assign_function"))
@@ -2668,7 +2863,7 @@ class NativePerformanceDialog(NativeDialog):
 
     def _create_midi_learn_menu(self):
         menu = NativeMenu(self)
-        assign = menu.addAction(tr("channel_editor.assign_cc"))
+        assign = menu.addAction(dialog_action(tr("channel_editor.assign_cc")))
         learn = menu.addAction(tr("channel_editor.learn_cc"))
         return menu, assign, learn
 
@@ -2688,7 +2883,7 @@ class NativePerformanceDialog(NativeDialog):
                 return None
             return (dialog.source.currentData(),
                     dialog.destination.currentData() if target.startswith("aux_") else None,
-                    dialog.scope.all_channels())
+                    dialog.scope.all_channels(), dialog.selected_value_range())
         finally:
             dialog.deleteLater()
 
@@ -2842,9 +3037,9 @@ class NativePerformanceDialog(NativeDialog):
                             scope=tr("channel_editor.cc_all_channels" if binding[3] else
                                      "channel_editor.cc_this_channel"))
                 conversion = tr("channel_editor.cc_conversion_examples",
-                                    low=channel_cc_target_value(destination, 0),
-                                    middle=channel_cc_target_value(destination, 64),
-                                    high=channel_cc_target_value(destination, 127))
+                                    low=ae.runtime.midi_learn.cc_value(channel, source, destination, 0),
+                                    middle=ae.runtime.midi_learn.cc_value(channel, source, destination, 64),
+                                    high=ae.runtime.midi_learn.cc_value(channel, source, destination, 127))
                 suffix = tr("channel_editor.cc_binding_details", binding=suffix,
                             conversion=conversion)
             elif no_effect:
@@ -2941,6 +3136,7 @@ class NativePerformanceDialog(NativeDialog):
                 field.set_detail_caption(status if font_footer else tr('channel_editor.cc_detail',source=badge,status=status),
                                          tooltip=field.cc_status.toolTip() or hint)
                 field.cc_status.set_text('')
+            effect_style_changed = bool(field.property("ccNoEffect")) != bool(no_effect)
             field.setProperty("ccNoEffect", no_effect)
             widget.setProperty("ccNoEffect", no_effect)
             field.cc_badge.set_tone("danger" if no_effect else "accent" if not mixed_source and (binding or routes or function_mapped) else None)
@@ -2948,6 +3144,14 @@ class NativePerformanceDialog(NativeDialog):
             field.setProperty("ccLearning", pending == (channel, key))
             field.style().unpolish(field)
             field.style().polish(field)
+            if effect_style_changed:
+                # Descendant selectors depend on the parent's ccNoEffect.
+                # Polishing only the field leaves cached caption/background
+                # styles behind after assignment or restoration.
+                for surface in field.findChildren(QWidget):
+                    surface.style().unpolish(surface)
+                    surface.style().polish(surface)
+                    surface.update()
 
     def _rename_cc(self, key, name):
         caption = self._cc_fields[key][2].replace("\n", " ")
@@ -3476,7 +3680,7 @@ class NativeOutputDiagnosticsPanel(QWidget):
         self.owner = owner
         self.analysis = ae.runtime.output_analysis
         self._measurement_stream = 0
-        root = set_layout(QVBoxLayout(self), 0, METRICS["section_gap"])
+        root = card_stack_layout(self)
         root.setSizeConstraint(QLayout.SetNoConstraint)
         self.measure_button = make_action_button(tr('output_tools.measure_reset'),self.reset_measurement)
         self.readouts = {}
@@ -3640,12 +3844,14 @@ def make_recording_quality_fields():
     for name, values, namespace in (
         ("recording_format", ("float32", "pcm32", "pcm24", "pcm16"), "recording.format_"),
         ("recording_container", tuple(RECORDING_EXTENSIONS), "recording.container_"),
-        ("recording_rate_mode", ("vbr", "cbr"), "recording.rate_"),
     ):
         combo = AnimatedComboBox()
         for value in values:
             combo.addItem(tr(namespace+value),value)
         fields[name] = combo
+    fields["recording_rate_mode"] = NativeRadioChoice(
+        tuple((value, tr("recording.rate_"+value)) for value in ("vbr", "cbr")))
+    install_effect_tooltip(tr("preferences.recording_rate_mode_detail"), *fields["recording_rate_mode"].buttons)
     fields["recording_bitrate"] = AnimatedComboBox()
     for value in RECORDING_BITRATES:
         fields["recording_bitrate"].addItem(tr("recording.bitrate_value",value=value),value)
@@ -3677,19 +3883,23 @@ def quality_field_values(fields):
             for name,widget in fields.items()}
 
 
-def midi_form_row(caption, control, tooltip=""):
-    row=QWidget()
+def midi_form_row(caption, control, tooltip="", *, wrap=True):
+    row=WidthMeasuredPanel() if wrap else QWidget()
     row.setMinimumWidth(0)
-    grid=set_layout(QGridLayout(row),0,METRICS["form_column_gap"])
-    label=ElasticLabel(caption,preferred_width=METRICS["form_label_width"])
-    label.setObjectName("FieldLabel")
+    grid=set_layout(FormRowLayout(row) if wrap else QGridLayout(row),0,METRICS["form_column_gap"])
+    label=FormCaptionLabel(caption,control,preferred_width=METRICS["form_label_width"])
     label.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
-    control.setMinimumWidth(0)
     control.setAccessibleName(caption)
-    control.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
-    grid.addWidget(label,0,0); grid.addWidget(control,0,1)
-    grid.setColumnStretch(1,1)
-    row.setFixedHeight(FORM_ROW_HEIGHT)
+    make_horizontally_elastic(control,QSizePolicy.Preferred if wrap else QSizePolicy.Fixed)
+    if wrap:
+        label.setWordWrap(True)
+        label.setBuddy(control)
+        grid.addWidget(label)
+        grid.addWidget(control)
+    else:
+        grid.addWidget(label,0,0); grid.addWidget(control,0,1)
+        grid.setColumnStretch(1,1)
+        row.setFixedHeight(FORM_ROW_HEIGHT)
     if tooltip:
         control.setAccessibleDescription(tooltip)
         row.setToolTip(tooltip); control.setToolTip(tooltip)
@@ -3779,7 +3989,7 @@ class NativeMidiExportPanel(NativeCard):
         self.filename.setAccessibleName(tr("player.export_destination"))
         filename_row=QWidget(); filename_layout=set_layout(QHBoxLayout(filename_row),0,METRICS["compact_content_gap"])
         filename_layout.addWidget(self.filename,1)
-        self.browse_button=make_action_button(tr("recording.browse"),self.choose_destination)
+        self.browse_button=make_action_button(dialog_action(tr("recording.browse")),self.choose_destination)
         filename_layout.addWidget(self.browse_button)
         file_body.addWidget(filename_row)
         self.quality=make_recording_quality_fields()
@@ -3795,8 +4005,7 @@ class NativeMidiExportPanel(NativeCard):
             self.sample_rate.addItem(sample_rate_caption(rate),rate)
         self.sample_rate.setCurrentIndex(self.sample_rate.findData(self.preferences.sample_rate))
         audio.addWidget(midi_form_row(tr("preferences.sample_rate"),self.sample_rate))
-        self.audio_channels=AnimatedComboBox()
-        self.audio_channels.addItem(tr("player.stereo"),False); self.audio_channels.addItem(tr("player.mono"),True)
+        self.audio_channels=NativeRadioChoice(((False,tr("player.stereo")),(True,tr("player.mono"))))
         audio.addWidget(midi_form_row(tr("player.export_channels"),self.audio_channels))
         self.quality_rows={}
         for name,field in self.quality.items():
@@ -3805,8 +4014,7 @@ class NativeMidiExportPanel(NativeCard):
             row=midi_form_row(tr("preferences."+name),field,tr("preferences."+name+"_detail"))
             self.quality_rows[name]=row; audio.addWidget(row)
         rendering=card("player.export_render_title")
-        self.range_mode=AnimatedComboBox()
-        self.range_mode.addItem(tr("player.export_range_all"),False); self.range_mode.addItem(tr("player.export_range_custom"),True)
+        self.range_mode=NativeRadioChoice(((False,tr("player.export_range_all")),(True,tr("player.export_range_custom"))))
         rendering.addWidget(midi_form_row(tr("player.export_range"),self.range_mode))
         duration=self.document.duration if self.document else 0
         self.start=NativeDecimalBox(0,duration,tr("player.export_start"),suffix=" s")
@@ -3828,10 +4036,33 @@ class NativeMidiExportPanel(NativeCard):
             lambda value:f'{value:.1f} dBFS'.replace('-','\u2212'),step=.1,
             input_steps=(.1,.2,1),entry_kind='db_decimal',tooltip=tr('player.export_normalize_tip'))
         rendering.addWidget(self.tail)
-        rendering.addWidget(midi_form_row(tr('player.align_processing'),self.align_processing,
-                                         tr('player.align_processing_tip')))
-        self.alignment_hint=ElasticLabel(); self.alignment_hint.setWordWrap(True)
-        rendering.addWidget(self.alignment_hint)
+        self.trim_tail = NativeToggleSwitch("")
+        rendering.addWidget(midi_form_row(tr('player.trim_tail'), self.trim_tail,
+                                         tr('player.trim_tail_tip')))
+        self.tail_threshold = NativeControlRow(tr('player.tail_threshold'), -120, -20, -60,
+            None, lambda value: f'{value:.0f} dBFS'.replace('-', '\u2212'),
+            input_steps=(1,5,10), entry_kind='db', tooltip=tr('player.tail_threshold_tip'))
+        self.tail_silence = NativeControlRow(tr('player.tail_silence'), .05, 5, .5,
+            None, lambda value: f'{value:.2f} s', step=.01, input_steps=(.01,.1,1),
+            entry_kind='seconds_decimal', tooltip=tr('player.tail_silence_tip'))
+        rendering.addWidget(self.tail_threshold)
+        rendering.addWidget(self.tail_silence)
+        alignment = WidthMeasuredPanel()
+        alignment_fields = WrappingControlLayout(alignment)
+        alignment_fields.setSpacing(METRICS['inner_card_gap'])
+        self.alignment_hint = ElasticLabel(tr('player.alignment_effects_unqualified'))
+        self.alignment_hint.setObjectName('MutedLabel')
+        self.alignment_hint.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.alignment_hint.setFixedHeight(FORM_ROW_HEIGHT)
+        self.alignment_hint.hide()
+        alignment_fields.addWidget(self.align_processing)
+        alignment_fields.addWidget(self.alignment_hint)
+        self.alignment_row = midi_form_row(tr('player.align_processing'), alignment)
+        alignment_caption = self.alignment_row.layout().itemAt(0).widget()
+        bind_field_enabled(self.align_processing, alignment_caption)
+        alignment_caption.setBuddy(self.align_processing)
+        self.align_processing.setAccessibleName(tr('player.align_processing'))
+        rendering.addWidget(self.alignment_row)
         for key,field,tip in (("export_normalize",self.normalize,"export_normalize_tip"),):
             rendering.addWidget(midi_form_row(tr("player."+key),field,tr("player."+tip)))
         rendering.addWidget(self.peak)
@@ -3849,7 +4080,7 @@ class NativeMidiExportPanel(NativeCard):
         self.recovery_choice=AnimatedComboBox(); self.recovery_choice.setMinimumWidth(0)
         self.recovery_choice.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
         recovery_actions.addWidget(self.recovery_choice,1)
-        self.recovery_button=make_action_button(tr('player.recovery_save'),self.recover_audio)
+        self.recovery_button=make_action_button(dialog_action(tr('player.recovery_save')),self.recover_audio)
         self.recovery_choice.currentIndexChanged.connect(self._recovery_selection)
         recovery_actions.addWidget(self.recovery_button); recovery_layout.addLayout(recovery_actions)
         root.addWidget(self.recovery_row); self.recovery_row.hide()
@@ -3876,18 +4107,21 @@ class NativeMidiExportPanel(NativeCard):
         footer.addWidget(self.export_button)
         root.addLayout(footer)
         self._job_editables=[self.filename,self.browse_button,self.container,self.sample_rate,
-                            self.audio_channels,self.range_mode,self.start,self.end,self.tail,self.normalize,self.peak,self.align_processing,
+                            self.audio_channels,self.range_mode,self.start,self.end,self.tail,self.trim_tail,
+                            self.tail_threshold,self.tail_silence,self.normalize,self.peak,self.align_processing,
                             *self.quality.values()]
         self._task_state='idle'; self._task_started=None; self._phase_started=None
         self._task_progress=None; self._task_destination=None; self._phase_rate=None
         self._last_rate_sample=None; self._last_time_text=None
-        for field in (self.container,self.quality['recording_format'],self.quality['recording_rate_mode'],self.sample_rate,self.audio_channels,self.range_mode):
+        for field in (self.container, self.quality['recording_format'], self.sample_rate):
             field.currentIndexChanged.connect(self.refresh)
-        for field in (self.start,self.end):
+        self.quality['recording_rate_mode'].valueChanged.connect(self.refresh)
+        for field in (self.audio_channels,self.range_mode,self.start,self.end):
             field.valueChanged.connect(self.refresh)
         self.speed.slider.valueChanged.connect(self.refresh)
         self.transpose.slider.valueChanged.connect(self.refresh)
         self.normalize.toggled.connect(self.refresh)
+        self.trim_tail.toggled.connect(self.refresh)
         self.disclosure.bind_control(self.details,self._set_expanded)
         self.disclosure.heightChanged.connect(self._disclosure_changed)
         for check in self.findChildren(OutlineCheckBox):
@@ -3925,8 +4159,12 @@ class NativeMidiExportPanel(NativeCard):
         for field in self._job_editables:
             field.setEnabled(available)
         for row in (self.start_row,self.end_row):
-            row.setEnabled(available and bool(self.range_mode.currentData()))
+            row.setEnabled(available and self.range_mode.value())
         self.peak.setEnabled(available and self.normalize.isChecked())
+        self.trim_tail.setEnabled(available and self.tail.get() > 0)
+        tail_detection = available and self.tail.get() > 0 and self.trim_tail.isChecked()
+        self.tail_threshold.setEnabled(tail_detection)
+        self.tail_silence.setEnabled(tail_detection)
         self.align_processing.setEnabled(available and getattr(self,'_alignment_available',False))
         self.export_button.setEnabled(available and getattr(self,'_rate_supported',True))
         recovering = self._task_state not in ('idle','done','cancelled','failed')
@@ -3975,7 +4213,7 @@ class NativeMidiExportPanel(NativeCard):
 
     def _recovery_selection(self):
         record=self.recovery_choice.currentData()
-        self.recovery_button.setText(tr('player.recovery_restart' if record and record['state']=='prepared' else 'player.recovery_save'))
+        self.recovery_button.setText(dialog_action(tr('player.recovery_restart' if record and record['state']=='prepared' else 'player.recovery_save')))
 
     def recover_audio(self):
         record=self.recovery_choice.currentData()
@@ -4137,11 +4375,16 @@ class NativeMidiExportPanel(NativeCard):
         self._alignment_available=timing['alignment_available']
         if not self._alignment_available: self.align_processing.setChecked(False)
         self.align_processing.setEnabled(timing['alignment_available'] and self._task_state in ('idle','done','cancelled','failed'))
-        names=[tr('audio_fx.kind.'+kind) if kind in AUDIO_FX_PARAMETERS else tr('player.timing_effect.'+kind)
-               for kind in timing['unqualified']]
-        self.alignment_hint.setText(tr('player.alignment_effects_unqualified',effects=', '.join(names)) if names else '')
-        self.alignment_hint.setVisible(not timing['alignment_available'])
-        kind=self.container.currentData(); mode=self.quality['recording_rate_mode'].currentData()
+        kinds = dict.fromkeys('channel_audio_fx' if kind.startswith('channel_audio_fx_') else kind
+                             for kind in timing['unqualified'])
+        names = [tr('audio_fx.kind.'+kind) if kind in AUDIO_FX_PARAMETERS else tr('player.timing_effect.'+kind)
+                 for kind in kinds]
+        detail = (tr('player.alignment_effects_detail', effects=', '.join(names)) if names else
+                  tr('player.align_processing_tip'))
+        caption = self.alignment_row.layout().itemAt(0).widget()
+        install_effect_tooltip(detail, self.alignment_row, caption, self.align_processing, self.alignment_hint)
+        self.alignment_hint.setVisible(not self._alignment_available)
+        kind=self.container.currentData(); mode=self.quality['recording_rate_mode'].value()
         format_field=self.quality['recording_format']
         sync_recording_formats(format_field,kind)
         visible={"recording_format":kind in ('wav','aiff','flac','ogg_flac'),
@@ -4152,14 +4395,14 @@ class NativeMidiExportPanel(NativeCard):
             "recording_rate_mode":kind in ('opus','mp3')}
         for name,row in self.quality_rows.items():
             row.setVisible(visible[name])
-        custom=bool(self.range_mode.currentData())
+        custom=self.range_mode.value()
         available=self.document is not None and self.player.export_job is None and self._task_state in ('idle','done','cancelled','failed')
         self.start_row.setEnabled(custom and available);self.end_row.setEnabled(custom and available)
         self.peak.setEnabled(self.normalize.isChecked() and self._task_state in ('idle','done','cancelled','failed'))
         rate=recording_output_rate(kind,self.sample_rate.currentData())
         duration=(self.end.value()-self.start.value() if custom else self.document.duration if self.document else 0)/(self.speed.get()/100)+self.tail.get()
-        self.info.setText(tr("player.export_summary",duration=max(0,duration),rate=rate,
-                             channels=1 if self.audio_channels.currentData() else 2))
+        self.info.setText(tr("player.export_summary_max" if self.trim_tail.isChecked() else "player.export_summary",duration=max(0,duration),rate=rate,
+                             channels=1 if self.audio_channels.value() else 2))
         self._rate_supported=recording_rate_supported(kind,self.sample_rate.currentData()) is not False
         if not self._rate_supported:
             self.info.setText(tr('recording.rate_unsupported',rate=self.sample_rate.currentData(),format=self.container.currentText()))
@@ -4224,11 +4467,13 @@ class NativeMidiExportPanel(NativeCard):
                 raise ValueError(tr("player.source_protected"))
             if not target.parent.is_dir():
                 raise ValueError(tr("player.export_path_invalid"))
-            custom=bool(self.range_mode.currentData())
+            custom=self.range_mode.value()
             options=MidiRenderOptions(self.start.value() if custom else 0,
                 self.end.value() if custom else self.document.duration,int(self.transpose.get()),
-                bool(self.audio_channels.currentData()),self.normalize.isChecked(),self.peak.get(),
-                self.align_processing.isChecked()).validate(self.document)
+                self.audio_channels.value(),self.normalize.isChecked(),self.peak.get(),
+                self.align_processing.isChecked(), trim_tail=self.trim_tail.isChecked(),
+                tail_threshold_db=self.tail_threshold.get(),
+                tail_silence_seconds=self.tail_silence.get()).validate(self.document)
             if custom and options.start >= options.end:
                 raise ValueError(tr("player.export_options_invalid"))
             preferences=replace(self.preferences,sample_rate=self.sample_rate.currentData(),**quality_field_values(self.quality)).validate()
@@ -4401,7 +4646,7 @@ class NativeRecordingDialog(NativeDialog):
             controls = control_row_layout()
             start = make_action_button('', lambda _checked=False, key=kind: owner.toggle_recording(key))
             start.setToolTip(tr('midi_recording.start_tip' if kind == 'midi' else 'recording.start_tip'))
-            save = make_action_button(tr('recording.save'), lambda _checked=False, key=kind: owner.save_recording(key))
+            save = make_action_button(dialog_action(tr('recording.save')), lambda _checked=False, key=kind: owner.save_recording(key))
             discard = make_action_button(tr('recording_workspace.discard'), lambda _checked=False, key=kind: owner.discard_recording(key))
             self.rows[kind] = (start, save, discard)
             for button in self.rows[kind]:
@@ -4419,7 +4664,7 @@ class NativeRecordingDialog(NativeDialog):
         self.close_hint.hide();root.addWidget(self.close_hint)
         root.addStretch(1)
         footer = control_row_layout()
-        self.settings_button = make_action_button(tr('recording_workspace.settings'), self.open_settings)
+        self.settings_button = make_action_button(dialog_action(tr('recording_workspace.settings')), self.open_settings)
         self.close_button = make_action_button(tr('common.close'), self.close)
         for button in (self.settings_button, self.close_button):
             button.setAutoDefault(False)
@@ -4509,7 +4754,7 @@ class NativeMidiPlayerDialog(NativeDialog):
         root.setSizeConstraint(QLayout.SetNoConstraint)
         self._content_layout=root
         files = control_row_layout()
-        self.open_button = make_action_button(tr("player.open"), self.choose_files)
+        self.open_button = make_action_button(dialog_action(tr("player.open")), self.choose_files)
         self.remove_button = make_action_button(tr("player.remove"), self.remove_file)
         for button in (self.open_button, self.remove_button):
             button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -4842,8 +5087,8 @@ class NativeMidiPlayerDialog(NativeDialog):
         blocked = self.port_selection.blockSignals(True)
         self.port_selection.clear()
         for port in self.document.ports if self.document else (0,):
-            names={row['slot']:row['name'] for row in self.owner.midi_input_runtime.port_settings.ports}
-            self.port_selection.addItem(names.get(port,tr('monitor.port_item',port=port)),port)
+            self.port_selection.addItem('',port)
+        self.refresh_port_names()
         self.port_selection.setCurrentIndex(0)
         self.port_selection.setVisible(bool(self.document and self.document.ports != (0,)))
         self.port_selection.blockSignals(blocked)
@@ -4868,6 +5113,12 @@ class NativeMidiPlayerDialog(NativeDialog):
                                         if self._player_port * 16 + ch in used})
         self.refresh()
         QTimer.singleShot(0,self._fit_content)
+
+    def refresh_port_names(self):
+        names={row['slot']:row['name'] for row in self.owner.midi_input_runtime.port_settings.ports}
+        for index in range(self.port_selection.count()):
+            port=self.port_selection.itemData(index)
+            self.port_selection.setItemText(index,names.get(port,tr('monitor.port_item',port=port)))
 
     def _select_player_port(self, _index):
         self._player_port = self.port_selection.currentData() or 0
@@ -5203,7 +5454,7 @@ class NativeErrorReportPanel(QWidget):
         self.status=NativeOptionalLabel();self.status.setWordWrap(True);preview_body.addWidget(self.status)
         actions=set_layout(QHBoxLayout(),0,METRICS['side_action_gap'])
         self.collect_button=make_action_button(tr('error_report.collect'),self.collect)
-        self.save_button=make_action_button(tr('error_report.save'),self.save,primary=True);self.save_button.setEnabled(False)
+        self.save_button=make_action_button(dialog_action(tr('error_report.save')),self.save,primary=True);self.save_button.setEnabled(False)
         for button in (self.collect_button,self.save_button):
             button.setMinimumWidth(0);button.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);actions.addWidget(button,1)
         preview_body.addLayout(actions);self.description.textChanged.connect(self.invalidate)
@@ -5290,107 +5541,626 @@ class NativeErrorReportPanel(QWidget):
         self.save_button.setEnabled(bool(self.reviewed));worker.deleteLater()
 
 
+class MidiEndpointList(QScrollArea):
+    """Scrollable form rows with the same preferred height in both directions."""
+
+    def __init__(self, caption):
+        super().__init__()
+        self.setObjectName('MidiEndpointList')
+        self.setAccessibleName(caption)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setMinimumHeight(2 * FORM_ROW_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+
+    def sizeHint(self):
+        return QSize(0, 5 * FORM_ROW_HEIGHT)
+
+    def minimumSizeHint(self):
+        return QSize(0, self.minimumHeight())
+
+
+class NativeMidiRoutingDialog(NativeDialog):
+    """Edit one draft of the destinations and sources for enabled devices."""
+
+    def __init__(self, parent, *, ports, devices, input_routes, output_routes):
+        super().__init__(parent)
+        self.setWindowTitle(tr('midi_ports.routing'))
+        device_count = max(len(group) for group in devices.values())
+        self.resize(540, min(430, max(210, 132 + device_count * 42)))
+        self.inputs = {}
+        self.outputs = {}
+        self.input_routes = dict(input_routes)
+        self.output_routes = dict(output_routes)
+        layout = set_layout(QVBoxLayout(self), METRICS['card_padding'], METRICS['inner_card_gap'])
+        self.error = NativeOptionalLabel()
+        self.error.setWordWrap(True)
+        make_horizontally_elastic(self.error, QSizePolicy.Preferred)
+        self.tabs = make_navigation_tabs()
+        self.tabs.setMinimumSize(0, 0)
+        self.tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        layout.addWidget(self.tabs, 1)
+        self.input_page, input_body = self._page('input')
+        self.output_page, output_body = self._page('output')
+        for key, name in devices['inputs'].items():
+            row = control_row_layout()
+            caption = self._device_label(name)
+            combo = AnimatedComboBox()
+            make_horizontally_elastic(combo)
+            combo.setAccessibleName(tr('midi_ports.routing_pick_input', name=name))
+            help_text = tr('midi_ports.routing_input_help', port=ports[0][1])
+            combo.setToolTip(help_text)
+            combo.setAccessibleDescription(help_text)
+            combo.addItem(tr('midi_ports.routing_default_input'), None)
+            for slot, port_name in ports:
+                combo.addItem(port_name, slot)
+            combo.setCurrentIndex(max(0, combo.findData(input_routes.get(key))))
+            caption.setBuddy(combo)
+            row.addWidget(caption, 1)
+            row.addWidget(combo, 1)
+            input_body.addLayout(row)
+            self.inputs[key] = combo
+        for key, name in devices['outputs'].items():
+            row = control_row_layout()
+            caption = self._device_label(name)
+            mode = AnimatedComboBox()
+            make_horizontally_elastic(mode)
+            mode.setAccessibleName(tr('midi_ports.routing_pick_output', name=name))
+            help_text = tr('midi_ports.routing_output_help')
+            mode.setToolTip(help_text)
+            mode.setAccessibleDescription(help_text)
+            mode.addItem(tr('midi_ports.routing_all'), False)
+            mode.addItem(tr('midi_ports.routing_selected'), True)
+            caption.setBuddy(mode)
+            row.addWidget(caption, 1)
+            row.addWidget(mode, 1)
+            output_body.addLayout(row)
+            group = WidthMeasuredPanel()
+            picks = WrappingControlLayout(group)
+            checks = {}
+            for slot, port_name in ports:
+                check = OutlineCheckBox(port_name.replace('&', '&&'))
+                check.setAccessibleName(port_name)
+                check.setChecked(slot in output_routes.get(key, [ports[0][0]]))
+                check.toggled.connect(self.error.clear)
+                picks.addWidget(check)
+                checks[slot] = check
+            output_body.addWidget(group)
+            mode.setCurrentIndex(int(key in output_routes))
+            group.setVisible(bool(mode.currentData()))
+            mode.currentIndexChanged.connect(lambda index, group=group: group.setVisible(bool(index)))
+            mode.currentIndexChanged.connect(self.error.clear)
+            self.outputs[key] = (name, mode, checks)
+        input_body.addStretch(1)
+        output_body.addStretch(1)
+        for direction, body in (('input', input_body), ('output', output_body)):
+            if body.count() == 1:
+                body.insertWidget(0, self._device_label(tr('midi_ports.routing_no_' + direction)))
+
+        layout.addWidget(self.error)
+        buttons = control_row_layout()
+        buttons.addStretch(1)
+        confirm = make_action_button(tr('common.confirm'), self._confirm, primary=True)
+        confirm.setDefault(True)
+        buttons.addWidget(confirm)
+        buttons.addWidget(make_action_button(tr('common.cancel'), self.reject))
+        layout.addLayout(buttons)
+        apply_native_text_metrics(self)
+
+    def _page(self, direction):
+        scroll = QScrollArea()
+        scroll.setObjectName('PreferencesScroll')
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = WidthMeasuredPanel()
+        content.setObjectName('PreferencesContent')
+        body = bordered_page_layout(card_stack_layout(content), METRICS['inner_card_gap'])
+        scroll.setWidget(content)
+        self.tabs.addTab(scroll, tr('midi_ports.' + direction))
+        return scroll, body
+
+    @staticmethod
+    def _device_label(text):
+        label = ElasticLabel(text)
+        label.setTextFormat(Qt.PlainText)
+        label.setWordWrap(True)
+        make_horizontally_elastic(label, QSizePolicy.Preferred)
+        return label
+
+    def _confirm(self):
+        outputs = dict(self.output_routes)
+        for key, (name, mode, checks) in self.outputs.items():
+            if not mode.currentData():
+                outputs.pop(key, None)
+                continue
+            selected = [slot for slot, check in checks.items() if check.isChecked()]
+            if not selected:
+                self.tabs.setCurrentWidget(self.output_page)
+                self.error.setText(tr('midi_ports.routing_empty_output', name=name))
+                mode.setFocus()
+                return
+            outputs[key] = selected
+        for key, combo in self.inputs.items():
+            slot = combo.currentData()
+            if slot is None:
+                self.input_routes.pop(key, None)
+            else:
+                self.input_routes[key] = slot
+        self.output_routes = outputs
+        self.accept()
+
+
 class NativeMidiPortSettingsPanel(WidthMeasuredPanel):
-    changed=Signal()
-    def __init__(self,parent=None):
+    changed = Signal()
+    refresh_requested = Signal()
+    DIRECTIONS = (
+        ('inputs', 'virtual_in', 'In', 'input'),
+        ('outputs', 'virtual_out', 'Out', 'output'),
+    )
+
+    def __init__(self, parent, *, header, runtime):
         super().__init__(parent)
         from settings import load_midi_ports
-        self.rows=[dict(row,inputs=list(row['inputs']),outputs=list(row['outputs'])) for row in load_midi_ports().ports]
-        self.index=0;self.loading=False;self.catalog={'inputs':[],'outputs':[]}
-        root=set_layout(QVBoxLayout(self),0,METRICS['compact_content_gap'])
-        header=control_row_layout();self.selector=AnimatedComboBox();header.addWidget(self.selector,1)
-        self.selector.setAccessibleName(tr('midi_ports.title'))
-        self.add=NativeRackButton('add',tr('midi_ports.add'),lambda:self._add())
-        self.remove=NativeRackButton('remove',tr('midi_ports.remove'),lambda:self._remove())
-        self.add.setToolTip(tr('midi_ports.add_help'));self.remove.setToolTip(tr('midi_ports.remove_help'))
-        header.addWidget(self.add);header.addWidget(self.remove);root.addLayout(header)
-        name_row=control_row_layout();name_row.addWidget(ElasticLabel(tr('midi_ports.name')))
-        self.name=QLineEdit();self.name.setMaxLength(27);self.name.setToolTip(tr('midi_ports.name_help'));name_row.addWidget(self.name,1);root.addLayout(name_row)
-        self.name.setAccessibleName(tr('midi_ports.name'))
-        switches=control_row_layout()
-        self.virtual_in=OutlineCheckBox(tr('midi_ports.virtual_in'));self.virtual_out=OutlineCheckBox(tr('midi_ports.virtual_out'))
-        for control in (self.virtual_in,self.virtual_out):control.setToolTip(tr('midi_ports.virtual_requirement'))
-        switches.addWidget(self.virtual_in,1);switches.addWidget(self.virtual_out,1);root.addLayout(switches)
-        hints=ElasticLabel(tr('midi_ports.direction_help'));hints.setWordWrap(True);root.addWidget(hints)
-        devices=QGridLayout();set_layout(devices,0,METRICS['form_column_gap']);self.devices={}
-        for column,direction in enumerate(('inputs','outputs')):
-            devices.addWidget(ElasticLabel(tr('midi_ports.'+direction)),0,column)
-            listing=NativeRowList();listing.setMinimumSize(0,0);listing.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
-            listing.setAccessibleName(tr('midi_ports.'+direction));listing.setSelectionMode(QAbstractItemView.NoSelection)
-            listing.itemChanged.connect(self._edit);devices.addWidget(listing,1,column);devices.setColumnStretch(column,1);self.devices[direction]=listing
-        root.addLayout(devices,1)
-        self.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        for listing in self.devices.values():
-            listing.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-            listing.setMinimumHeight(listing.fontMetrics().lineSpacing()*2+10)
-        self.refresh_button=make_action_button(tr('midi_ports.refresh'),self.refresh_devices);root.addWidget(self.refresh_button,alignment=Qt.AlignRight)
-        self.selector.currentIndexChanged.connect(self._select)
-        # Include assistive ValuePattern edits;_show_row owns the loading guard.
-        self.name.textChanged.connect(self._edit)
-        self.virtual_in.toggled.connect(self._edit);self.virtual_out.toggled.connect(self._edit)
-        self._show_row();self.refresh_devices()
 
-    def _commit(self):
-        row=self.rows[self.index];row.update(name=self.name.text(),virtual_in=self.virtual_in.isChecked(),virtual_out=self.virtual_out.isChecked())
-        for direction,listing in self.devices.items():
-            row[direction]=[listing.item(i).data(Qt.UserRole) for i in range(listing.count()) if listing.item(i).checkState()==Qt.Checked]
+        self.catalog = {'inputs': [], 'outputs': []}
+        self.runtime = runtime
+        self._driver_report = {}
+        self._driver_absent = False
+        self._driver_available = False
+        self._virtual_checks = []
+        self._stacked = None
+        self._editing_port = None
+        self.rename_field = None
+        self._suggested_name = ''
+        self.card_header = header
+        root = set_layout(QVBoxLayout(self), 0, METRICS['compact_content_gap'])
+        self.new_port_name = self._name_field()
+        self.new_port_name.setPlaceholderText(tr('midi_ports.new_name'))
+        self.new_port_name.setAccessibleName(tr('midi_ports.new_name'))
+        self.new_port_name.textChanged.connect(self._update_add_button)
+        self.new_port_name.returnPressed.connect(self._add_port)
+        self.add_button = NativeRackButton('add', tr('midi_ports.add'), self._add_port)
+        self.add_button.setToolTip(tr('midi_ports.add_help'))
+        self.add_controls = QWidget()
+        add_row = control_row_layout(self.add_controls)
+        add_row.addWidget(self.new_port_name, 1)
+        add_row.addWidget(self.add_button)
+        header.addWidget(self.add_controls, 2)
+        self.name_error = ElasticLabel()
+        self.name_error.setWordWrap(True)
+        self.name_error.hide()
+        root.addWidget(self.name_error)
+        self.input_notice = NativeOptionalLabel()
+        self.input_notice.setObjectName('MidiInputNotice')
+        self.input_notice.setWordWrap(True)
+        make_horizontally_elastic(self.input_notice, QSizePolicy.Preferred)
+        root.addWidget(self.input_notice)
 
-    def _edit(self,*_):
-        if self.loading:return
-        self._commit();self.selector.setItemText(self.index,self.name.text());self.changed.emit()
+        self.connection_panel = WidthMeasuredPanel()
+        self.connections = set_layout(QGridLayout(self.connection_panel), 0, METRICS['compact_content_gap'])
+        self.connections.setHorizontalSpacing(METRICS['form_column_gap'])
+        self.devices = {}
+        self.direction_headings = {}
+        self.endpoint_controls = {}
+        for direction, _, _, title in self.DIRECTIONS:
+            heading = ElasticLabel(tr('midi_ports.' + title))
+            heading.setObjectName('FieldLabel')
+            listing = MidiEndpointList(heading.text())
+            help_text = tr('midi_ports.external_input_help' if direction == 'inputs' else 'midi_ports.output_help')
+            heading.setToolTip(help_text)
+            listing.setAccessibleDescription(help_text)
+            self.devices[direction] = listing
+            self.direction_headings[direction] = heading
+        root.addWidget(self.connection_panel, 1)
+        self.footer = control_row_layout()
+        self.routing_button = make_action_button(dialog_action(tr('midi_ports.routing')), self._edit_routing)
+        self.routing_button.setToolTip(tr('midi_ports.routing_help'))
+        self.refresh_button = make_action_button(tr('midi_ports.refresh'), lambda: self.refresh_requested.emit())
+        self.footer.addWidget(self.routing_button, alignment=Qt.AlignLeft)
+        self.footer.addStretch(1)
+        self.footer.addWidget(self.refresh_button, alignment=Qt.AlignRight)
+        root.addLayout(self.footer)
+        self._reflow(self.width())
+        self._load_settings(load_midi_ports())
+        self.refresh_devices()
 
-    def _show_row(self):
-        self.loading=True
+    @staticmethod
+    def _name_field(name=''):
+        field = QLineEdit(name)
+        field.setAccessibleName(tr('midi_ports.name'))
+        field.setMaxLength(27)
+        field.setFixedHeight(FORM_ROW_HEIGHT)
+        make_horizontally_elastic(field)
+        return field
+
+    def _load_settings(self, settings):
+        first = settings.ports[0]
+        self.external_selections = {direction: list(first[direction]) for direction in self.devices}
+        self.input_routes = dict(first.get('input_routes', {}))
+        self.output_routes = dict(first.get('output_routes', {}))
+        self.rows = {row['slot']: dict(row) for row in settings.ports if row.get('virtual_port', True)}
+        self._editing_port = None
+        self.rename_field = None
+        self.name_error.hide()
+        self._suggest_port_name(force=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow(event.size().width())
+
+    def _reflow(self, width):
+        title = self.card_header.itemAt(0).widget()
+        minimum_header = (title.sizeHint().width() + self.new_port_name.fontMetrics().horizontalAdvance(
+            self.new_port_name.placeholderText()) + 2 * FORM_ROW_HEIGHT + self.card_header.spacing())
+        self.card_header.setDirection(QHBoxLayout.TopToBottom if width < minimum_header else QHBoxLayout.LeftToRight)
+        footer_width = self.routing_button.sizeHint().width() + self.refresh_button.sizeHint().width() + self.footer.spacing()
+        self.footer.setDirection(QHBoxLayout.TopToBottom if width < footer_width else QHBoxLayout.LeftToRight)
+        preferred = self.fontMetrics().horizontalAdvance('Microsoft GS Wavetable Synth') + 28
+        stacked = width < 2 * preferred + self.connections.horizontalSpacing()
+        if stacked == self._stacked:
+            return
+        self._stacked = stacked
+        for row in range(4):
+            self.connections.setRowStretch(row, 0)
+        for column, direction in enumerate(self.devices):
+            left = 0 if stacked else column
+            top = 2 * column if stacked else 0
+            heading = self.direction_headings[direction]
+            listing = self.devices[direction]
+            self.connections.removeWidget(heading)
+            self.connections.removeWidget(listing)
+            self.connections.addWidget(heading, top, left)
+            self.connections.addWidget(listing, top + 1, left)
+        self.connections.setColumnStretch(0, 1)
+        self.connections.setColumnStretch(1, 0 if stacked else 1)
+        self.connections.setRowStretch(1, 1)
+        if stacked:
+            self.connections.setRowStretch(3, 1)
+
+    def _external_devices(self, direction):
+        devices = {device['key']: device['name']
+                   for device in self.catalog[direction] if not device['own']}
+        for key in self.external_selections[direction]:
+            if key in devices:
+                continue
+            try:
+                value = json.loads(key)
+            except ValueError:
+                value = None
+            name = value[0] if isinstance(value, list) and value and isinstance(value[0], str) else key
+            devices[key] = tr('midi_ports.disconnected', name=name)
+        return devices
+
+    def _set_virtual(self, slot, field, checked):
+        self.rows[slot][field] = checked
+        self._update_input_notice()
+        self.changed.emit()
+
+    def _set_external(self, direction, key, checked):
+        devices = self.external_selections[direction]
+        if checked:
+            devices.append(key)
+        else:
+            devices.remove(key)
+        self._update_input_notice()
+        self.changed.emit()
+
+    def _edit_routing(self):
+        from settings import MidiPortSettings
+
+        if self.rename_field is not None and not self._commit_rename():
+            return
+        ports = [(slot, row['name']) for slot, row in self.rows.items()] or [(0, MidiPortSettings.DEFAULT_NAME)]
+        devices = {direction: {key: name for key, name in self._external_devices(direction).items()
+                               if key in self.external_selections[direction]}
+                   for direction in self.devices}
+        dialog = NativeMidiRoutingDialog(self, ports=ports, devices=devices,
+                                         input_routes=self.input_routes, output_routes=self.output_routes)
         try:
-            self.selector.clear()
-            for row in self.rows:self.selector.addItem(row['name'])
-            self.selector.setCurrentIndex(self.index)
-            row=self.rows[self.index];self.name.setText(row['name']);self.virtual_in.setChecked(row['virtual_in']);self.virtual_out.setChecked(row['virtual_out'])
-            for direction,listing in self.devices.items():
-                listing.clear();known=set()
-                for device in self.catalog[direction]:
-                    if device['own']:continue
-                    item=QListWidgetItem(device['name']);item.setData(Qt.UserRole,device['key']);item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
-                    item.setCheckState(Qt.Checked if device['key'] in row[direction] else Qt.Unchecked);listing.addItem(item);known.add(device['key'])
-                for key in row[direction]:
-                    if key in known:continue
-                    try:label=__import__('json').loads(key)[0]
-                    except (ValueError,TypeError,IndexError):label=key
-                    item=QListWidgetItem(tr('midi_ports.disconnected',name=label));item.setData(Qt.UserRole,key);item.setFlags(item.flags()|Qt.ItemIsUserCheckable);item.setCheckState(Qt.Checked);listing.addItem(item)
-                if not listing.count():
-                    item=QListWidgetItem(tr('midi_ports.empty_devices'));item.setFlags(Qt.NoItemFlags);listing.addItem(item)
-                # Both directions share one grid row. Device counts affect
-                # scroll range,never the relative list heights.
-            self.add.setEnabled(len(self.rows)<8);self.remove.setEnabled(len(self.rows)>1)
-        finally:self.loading=False
+            if dialog.exec() != QDialog.Accepted:
+                return
+            if (self.input_routes, self.output_routes) != (dialog.input_routes, dialog.output_routes):
+                self.input_routes = dialog.input_routes
+                self.output_routes = dialog.output_routes
+                self._update_input_notice()
+                self.changed.emit()
+        finally:
+            dialog.deleteLater()
 
-    def _select(self,index):
-        if self.loading or index<0:return
-        self._commit();self.index=index;self._show_row()
+    @staticmethod
+    def _endpoint_check(name, checked):
+        check = OutlineCheckBox(name.replace('&', '&&'))
+        check.setAccessibleName(name)
+        check.setChecked(checked)
+        return check
 
-    def _add(self):
-        self._commit()
-        if len(self.rows)>=8:return
-        number=2
-        while 'ABMSynth MIDI '+str(number) in {row['name'] for row in self.rows}:number+=1
-        slot=next(i for i in range(8) if i not in {row['slot'] for row in self.rows})
-        self.rows.append(dict(name='ABMSynth MIDI '+str(number),slot=slot,virtual_in=True,virtual_out=True,inputs=[],outputs=[]))
-        self.rows.sort(key=lambda row:row['slot']);self.index=next(i for i,r in enumerate(self.rows) if r['slot']==slot)
-        self._show_row();self.changed.emit()
+    def _label_port(self, slot, check, suffix, title, editing):
+        name = f"{self.rows[slot]['name'].strip()} {suffix}"
+        if not editing:
+            check.setText(name.replace('&', '&&'))
+        check.setAccessibleName(name)
+        hint = tr(f'midi_ports.endpoint_{title}_help', name=name)
+        check.setProperty('endpointHelp', hint)
 
-    def _remove(self):
-        if len(self.rows)<=1:return
-        self.rows.pop(self.index);self.index=min(self.index,len(self.rows)-1);self._show_row();self.changed.emit()
+    def set_driver_status(self, report):
+        self._driver_report = report
+        self._refresh_virtual_checks()
+
+    def _refresh_virtual_checks(self):
+        report = self._driver_report
+        self._driver_available = (report.get('state') == 'ready' or
+                                  any(row['state'] == 'ready' for row in report.get('architectures', ())))
+        self._driver_absent = not self._driver_available and report.get('state') == 'absent'
+        if not self._driver_absent:
+            self._driver_available |= any(device['own'] for devices in self.catalog.values() for device in devices)
+        limitation = tr('midi_ports.virtual_requirement' if self._driver_absent else 'midi_ports.virtual_unavailable')
+        for check, slot, field in self._virtual_checks:
+            blocked = check.blockSignals(True)
+            check.setChecked(self._driver_available and self.rows[slot][field])
+            check.blockSignals(blocked)
+            check.setEnabled(self._driver_available)
+            hint = check.property('endpointHelp') if self._driver_available else limitation
+            check.setToolTip(hint)
+            check.setAccessibleDescription(hint)
+        self._update_input_notice()
+
+    def _update_input_notice(self):
+        available = {device['key'] for device in self.catalog['inputs'] if not device['own']}
+        selected = available.intersection(self.external_selections['inputs'])
+        virtual = {slot for slot, row in self.rows.items() if self._driver_available and row['virtual_in']}
+        saved = self.runtime.port_settings.ports
+        saved_virtual = {row['slot'] for row in saved if row['virtual_in']}
+        server = self.runtime.server
+        active = self.runtime.port_router.active_devices if self.runtime.port_router is not None else ()
+        first_slot = next(iter(self.rows), 0)
+        draft_routes = {key: self.input_routes.get(key, first_slot) for key in selected}
+        active_external = any(('inputs', key, slot) in active for key, slot in draft_routes.items())
+        notice = ''
+        if not virtual and not selected:
+            if self.rows and self._driver_absent:
+                notice = 'no_input_driver' if available else 'no_input_driver_device'
+            elif self.rows and not self._driver_available and not available:
+                notice = 'no_input_unavailable'
+            elif not self.rows and not available:
+                notice = 'no_input_device'
+            else:
+                notice = 'no_input'
+        elif server is None or not server.running:
+            notice = 'input_not_ready'
+        elif not (virtual & saved_virtual or active_external):
+            saved_routes = self.runtime.port_settings.device_routes('inputs')
+            if virtual or any(saved_routes.get(key) != slot for key, slot in draft_routes.items()):
+                notice = 'input_pending'
+            else:
+                notice = 'input_open_failed'
+        elif self.rows and not self._driver_available:
+            notice = 'virtual_requirement' if self._driver_absent else 'virtual_unavailable'
+        text = tr('midi_ports.' + notice) if notice else ''
+        if self.input_notice.text() != text:
+            self.input_notice.setText(text)
+            invalidate_layout_chain(self.input_notice)
+
+    def _build_connections(self):
+        edit_text = self.rename_field.text() if self.rename_field is not None else None
+        self.rename_field = None
+        self.remove_buttons = {direction: {} for direction in self.devices}
+        self.rename_buttons = {direction: {} for direction in self.devices}
+        self._virtual_checks = []
+        self._focus_controls = []
+        for direction, field, suffix, title in self.DIRECTIONS:
+            listing = self.devices[direction]
+            scroll_value = listing.verticalScrollBar().value()
+            content = QWidget()
+            layout = set_layout(QVBoxLayout(content), METRICS['compact_content_gap'], 2)
+            controls = []
+            for slot, row in self.rows.items():
+                editing = self._editing_port == (direction, slot)
+                check = self._endpoint_check('', False)
+                self._label_port(slot, check, suffix, title, editing)
+                self._virtual_checks.append((check, slot, field))
+                check.toggled.connect(lambda enabled, slot=slot, field=field: self._set_virtual(slot, field, enabled))
+                controls.append(check)
+                self._focus_controls.append(check)
+                holder = QWidget()
+                own_row = control_row_layout(holder)
+                if editing:
+                    own_row.addWidget(check)
+                    self.rename_field = self._name_field(row['name'] if edit_text is None else edit_text)
+                    self.rename_field.installEventFilter(self)
+                    self.rename_field.returnPressed.connect(self._commit_rename)
+                    own_row.addWidget(self.rename_field, 1)
+                    confirm = NativeRackButton('confirm', tr('common.confirm'), self._commit_rename)
+                    cancel = NativeRackButton('cancel', tr('common.cancel'), self._cancel_rename)
+                    own_row.addWidget(confirm)
+                    own_row.addWidget(cancel)
+                    self._focus_controls.extend((self.rename_field, confirm, cancel))
+                else:
+                    make_horizontally_elastic(check)
+                    own_row.addWidget(check, 1)
+                    rename = NativeRackButton('rename', tr('midi_ports.rename_selected', name=row['name']),
+                                              lambda _, direction=direction, slot=slot: self._begin_rename(direction, slot))
+                    rename.setToolTip(rename.accessibleName() + '\n' + tr('midi_ports.rename_help'))
+                    remove = NativeRackButton('remove', tr('midi_ports.remove_selected', name=row['name']),
+                                              lambda _, direction=direction, slot=slot: self._remove_port(direction, slot))
+                    remove.setToolTip(remove.accessibleName() + '\n' + tr('midi_ports.remove_help'))
+                    own_row.addWidget(rename)
+                    own_row.addWidget(remove)
+                    self.rename_buttons[direction][slot] = rename
+                    self.remove_buttons[direction][slot] = remove
+                    self._focus_controls.extend((rename, remove))
+                layout.addWidget(holder)
+            external = self._external_devices(direction)
+            if self.rows and external:
+                separator = QFrame()
+                separator.setObjectName('HorizontalDivider')
+                separator.setFixedHeight(1)
+                layout.addWidget(separator)
+            for key, name in external.items():
+                check = self._endpoint_check(name, key in self.external_selections[direction])
+                make_horizontally_elastic(check)
+                check.toggled.connect(lambda enabled, direction=direction, key=key: self._set_external(direction, key, enabled))
+                layout.addWidget(check)
+                controls.append(check)
+                self._focus_controls.append(check)
+            layout.addStretch(1)
+            self.endpoint_controls[direction] = controls
+            previous = listing.takeWidget()
+            if previous is not None:
+                previous.hide()
+                previous.deleteLater()
+            set_transparent_scroll_content(listing, content)
+            apply_native_text_metrics(content)
+            listing.verticalScrollBar().setValue(scroll_value)
+        self._refresh_virtual_checks()
+        focus = self.focus_widgets()
+        for left, right in zip(focus, focus[1:]):
+            QWidget.setTabOrder(left, right)
+
+    def eventFilter(self, watched, event):
+        if watched is self.rename_field and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self._cancel_rename()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _begin_rename(self, direction, slot):
+        if self.rename_field is not None and not self._commit_rename():
+            return
+        self._editing_port = (direction, slot)
+        self.name_error.hide()
+        self._build_connections()
+        self.rename_field.setFocus()
+        self.rename_field.selectAll()
+
+    def _close_rename(self):
+        direction, slot = self._editing_port
+        self._editing_port = None
+        self.rename_field = None
+        self.name_error.hide()
+        self._build_connections()
+        self.rename_buttons[direction][slot].setFocus()
+
+    def _cancel_rename(self):
+        self._close_rename()
+
+    def _commit_rename(self):
+        _, slot = self._editing_port
+        try:
+            validated = self.settings()
+        except ValueError as exc:
+            self.name_error.setText(str(exc))
+            self.name_error.show()
+            self.rename_field.setFocus()
+            return False
+        self.rows[slot]['name'] = next(row['name'] for row in validated.ports if row['slot'] == slot)
+        self._suggest_port_name()
+        self._close_rename()
+        self.changed.emit()
+        return True
+
+    def _suggest_port_name(self, *, force=False):
+        from settings import MidiPortSettings
+
+        names = {row['name'].casefold() for row in self.rows.values()}
+        suggestion = MidiPortSettings.DEFAULT_NAME
+        if self.rows:
+            number = 2
+            while f'{suggestion} {number}'.casefold() in names:
+                number += 1
+            suggestion = f'{suggestion} {number}'
+        replace = force or self.new_port_name.text() == self._suggested_name
+        self._suggested_name = suggestion
+        if replace:
+            self.new_port_name.setText(suggestion)
+        self._update_add_button()
+
+    def _update_add_button(self):
+        self.add_button.setEnabled(len(self.rows) < 8 and bool(self.new_port_name.text().strip()))
+
+    def _add_port(self):
+        from settings import MidiPortSettings
+
+        if not self.add_button.isEnabled():
+            return
+        if self.rename_field is not None and not self._commit_rename():
+            return
+        slot = next(i for i in range(8) if i not in self.rows)
+        row = dict(name=self.new_port_name.text(), slot=slot, virtual_in=True, virtual_out=True,
+                   inputs=[], outputs=[])
+        try:
+            validated = MidiPortSettings((*self.rows.values(), row)).normalized()
+        except ValueError as exc:
+            self.name_error.setText(str(exc))
+            self.name_error.show()
+            self.new_port_name.setFocus()
+            return
+        self.rows = {row['slot']: row for row in validated.ports}
+        self._suggest_port_name(force=True)
+        self.name_error.hide()
+        self._build_connections()
+        self.new_port_name.setFocus()
+        self.changed.emit()
+
+    def _remove_port(self, direction, slot):
+        if self.rename_field is not None:
+            if self._editing_port[1] == slot:
+                self._editing_port = None
+                self.rename_field = None
+            elif not self._commit_rename():
+                return
+        del self.rows[slot]
+        self.input_routes = {key: port for key, port in self.input_routes.items() if port != slot}
+        for key, ports in tuple(self.output_routes.items()):
+            if slot not in ports:
+                continue
+            remaining = [port for port in ports if port != slot]
+            if remaining:
+                self.output_routes[key] = remaining
+            else:
+                del self.output_routes[key]
+                if key in self.external_selections['outputs']:
+                    self.external_selections['outputs'].remove(key)
+        self._suggest_port_name()
+        self.name_error.hide()
+        self._build_connections()
+        target = next(iter(self.remove_buttons[direction].values()), self.new_port_name)
+        target.setFocus()
+        self.changed.emit()
+
+    def focus_widgets(self):
+        return (self.new_port_name, self.add_button, *self._focus_controls, self.routing_button, self.refresh_button)
+
+    def restore_defaults(self):
+        from settings import MidiPortSettings
+
+        self._load_settings(MidiPortSettings().normalized())
+        self._build_connections()
 
     def refresh_devices(self):
-        self._commit()
         from midi_input_runtime import midi_endpoint_catalog
-        self.catalog=midi_endpoint_catalog();self._show_row()
+
+        self.catalog = midi_endpoint_catalog()
+        self._build_connections()
 
     def settings(self):
-        self._commit()
         from settings import MidiPortSettings
-        return MidiPortSettings(tuple(self.rows)).normalized()
+
+        routing = dict(input_routes=self.input_routes, output_routes=self.output_routes)
+        if not self.rows:
+            return MidiPortSettings.external_only(**self.external_selections, **routing)
+        first = next(iter(self.rows))
+        rows = []
+        for slot, row in self.rows.items():
+            candidate = dict(row, **{direction: devices if slot == first else []
+                                     for direction, devices in self.external_selections.items()})
+            candidate.pop('input_routes', None)
+            candidate.pop('output_routes', None)
+            if slot == first:
+                candidate.update(routing)
+            if self.rename_field is not None and self._editing_port[1] == slot:
+                candidate['name'] = self.rename_field.text()
+            rows.append(candidate)
+        return MidiPortSettings(tuple(rows)).normalized()
 
 
 class NativeDriverSetupNotice(QObject):
@@ -5504,6 +6274,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         code=process.returncode
         self.mapper_install_process=None
         self._refresh_mapper_status()
+        self.midi_ports.refresh_devices()
         errors={10:'player.mapper_error_host',11:'player.mapper_error_admin',12:'player.mapper_error_busy',
             13:'player.mapper_error_mode',14:'player.mapper_error_preparation',15:'player.mapper_error_transaction',
             16:'player.mapper_error_file',17:'player.mapper_error_slot',18:'player.mapper_error_owner',
@@ -5524,13 +6295,16 @@ class NativeEnginePreferencesDialog(NativeDialog):
         if self.mapper_install_process is not None:return
         from windows_integration import midi_mapper_status
         report=midi_mapper_status();self._mapper_status_snapshot=report
+        self.midi_ports.set_driver_status(report)
         captions={'ready':'player.mapper_state_ready','absent':'player.mapper_state_absent',
+            'missing_persistence':'player.mapper_state_persistence',
             'missing_registration':'player.mapper_state_registration','missing_file':'player.mapper_state_file',
             'changed_file':'player.mapper_state_changed','conflict':'player.mapper_state_conflict',
             'unverified':'player.mapper_state_unverified'}
         rows={row['architecture']:row['state'] for row in report['architectures']}
         for arch,label in self.mapper_arch_status.items():label.setText(tr(captions.get(rows.get(arch),'player.mapper_state_unknown')))
         hints={'absent':'player.mapper_hint_install',
+            'missing_persistence':'player.mapper_hint_persistence',
             'missing_registration':'player.mapper_hint_registration','missing_file':'player.mapper_hint_file',
             'changed_file':'player.mapper_hint_changed','conflict':'player.mapper_hint_conflict',
             'unverified':'player.mapper_hint_unverified','unsupported':'player.mapper_hint_unsupported','unreadable':'player.mapper_hint_unreadable'}
@@ -5556,7 +6330,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.mapper_status.setText(status)
         actions={'Install':'player.mapper_install','Repair':'player.mapper_repair','Uninstall':'player.mapper_uninstall','Update':'player.mapper_update'}
         intended=report.get('requested_action',report['action'])
-        self.mapper_install_button.setText(tr(actions.get(intended,'player.mapper_repair')))
+        self.mapper_install_button.setText(dialog_action(tr(actions.get(intended,'player.mapper_repair'))))
         self.mapper_install_button.setEnabled(report['action'] is not None)
         self.mapper_check_button.setEnabled(True)
         if hasattr(self,'mapper_card'):
@@ -5564,7 +6338,10 @@ class NativeEnginePreferencesDialog(NativeDialog):
             self._queue_content_fit()
 
     def _mapper_tab_changed(self,*_args):
-        if self.isVisible() and self.tabs.currentWidget() is self.program_scroll:self._refresh_mapper_status()
+        if not self.isVisible():return
+        page=self.tabs.currentWidget()
+        if page is self.program_scroll:self._refresh_mapper_status()
+        elif page is self.midi_input_scroll:self._refresh_midi_input_ports()
 
     def __init__(self, owner: QMainWindow):
         super().__init__(owner)
@@ -5591,7 +6368,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         content = WidthMeasuredPanel()
         content.setObjectName("PreferencesContent")
         content.setMinimumWidth(0)
-        body = bordered_page_layout(QVBoxLayout(content),METRICS['section_gap'])
+        body = bordered_page_layout(card_stack_layout(content),METRICS['inner_card_gap'])
         body.setSizeConstraint(QLayout.SetNoConstraint)
         self.sample_rate = AnimatedComboBox()
         self.sample_rate.setAccessibleName(tr("preferences.sample_rate"))
@@ -5605,9 +6382,8 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.midi_cpu_limit = AnimatedComboBox()
         for value, key in ((0, "preferences.cpu_auto"), (101, "preferences.cpu_no_kill")):
             self.midi_cpu_limit.addItem(tr(key), value)
-        self.soundfont_stereo = AnimatedComboBox()
-        for enabled, key in ((False, "preferences.pan_existing"), (True, "preferences.pan_balance")):
-            self.soundfont_stereo.addItem(tr(key), enabled)
+        self.soundfont_stereo = NativeRadioChoice(((False, tr("preferences.pan_existing")),
+                                                  (True, tr("preferences.pan_balance"))))
         for name, field in make_recording_quality_fields().items():
             setattr(self,name,field)
         self.recording_timestamp = NativeToggleSwitch("")
@@ -5623,7 +6399,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.recording_directory_edit.setPlaceholderText(tr("recording.folder_default"))
         make_horizontally_elastic(self.recording_directory_edit)
         folder_row.addWidget(self.recording_directory_edit, 1)
-        self.recording_folder_button = make_action_button(tr("recording.browse"), self._choose_recording_directory)
+        self.recording_folder_button = make_action_button(dialog_action(tr("recording.browse")), self._choose_recording_directory)
         folder_row.addWidget(self.recording_folder_button)
         self.recording_folder_reset = make_action_button(tr("recording.folder_reset"), lambda: self.recording_directory_edit.clear())
         folder_row.addWidget(self.recording_folder_reset)
@@ -5634,26 +6410,16 @@ class NativeEnginePreferencesDialog(NativeDialog):
             "preferences.interpolation_sinc16",
         )):
             self.interpolation.addItem(tr(key), quality)
-        self.midi_timing = AnimatedComboBox()
-        self.midi_timing.setAccessibleName(tr("preferences.midi_timing"))
-        for enabled, key, detail_key in (
-            (False, "preferences.midi_timing_sync", "preferences.midi_timing_sync_detail"),
-            (True, "preferences.midi_timing_async", "preferences.midi_timing_async_detail"),
-        ):
-            self.midi_timing.addItem(tr(key), enabled)
-            self.midi_timing.setItemData(
-                self.midi_timing.count() - 1,
-                tooltip_display_text(tr(detail_key)), Qt.ToolTipRole,
-            )
-        self.loading_mode = AnimatedComboBox()
-        for mode, key in enumerate(("preferences.loading_realtime", "preferences.loading_used", "preferences.loading_all")):
-            self.loading_mode.addItem(tr(key), mode)
+        self.midi_timing = NativeRadioChoice(((False,tr("preferences.midi_timing_sync")),
+                                               (True,tr("preferences.midi_timing_async"))))
+        for button, key in zip(self.midi_timing.buttons,("preferences.midi_timing_sync_detail",
+                                                        "preferences.midi_timing_async_detail")):
+            install_effect_tooltip(tr(key),button)
+        self.loading_mode = NativeRadioChoice(tuple(enumerate(tr(key) for key in (
+            "preferences.loading_realtime", "preferences.loading_used", "preferences.loading_all"))))
         self.default_reverb_send = NativeNumberBox(0, 127, tr("preferences.default_reverb_send"))
-        self.soundfont_fx_policy = AnimatedComboBox()
-        for value, key in (("sum", "preferences.fx_sum"),
-                           ("minimum", "preferences.fx_minimum"),
-                           ("midi_only", "preferences.fx_midi_only")):
-            self.soundfont_fx_policy.addItem(tr(key), value)
+        self.soundfont_fx_policy = NativeRadioChoice((("sum", tr("preferences.fx_sum")),
+            ("minimum", tr("preferences.fx_minimum")), ("midi_only", tr("preferences.fx_midi_only"))))
         self.priority = AnimatedComboBox()
         self.priority.setAccessibleName(tr("preferences.priority"))
         for level, key in (
@@ -5672,6 +6438,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.start_minimized = OutlineCheckBox("")
         self.minimize_to_tray = OutlineCheckBox("")
         self.close_to_tray = OutlineCheckBox("")
+        self.always_on_top = OutlineCheckBox("")
         self.check_updates_on_startup = OutlineCheckBox("")
         self.windows_midi_default = NativeToggleSwitch("")
         if os.environ.get('ABMSYNTH_RECOVERY_PROFILE'):
@@ -5719,6 +6486,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
             "start_minimized": (self.start_minimized, "start_minimized", "start_minimized_detail"),
             "minimize_to_tray": (self.minimize_to_tray, "minimize_to_tray", "minimize_to_tray_detail"),
             "close_to_tray": (self.close_to_tray, "close_to_tray", "close_to_tray_detail"),
+            "always_on_top": (self.always_on_top, "always_on_top", "always_on_top_detail"),
         }
         self._form_columns = []
         self._settings_cards = []
@@ -5726,8 +6494,9 @@ class NativeEnginePreferencesDialog(NativeDialog):
         # Single-column sequences remain ordered;only paired window actions
         # below use explicit semantic columns.
         self.audio_quality_card = self._settings_card('preferences.quality_title',
-            ('sample_rate','interpolation','soundfont_stereo','soundfont_fx_policy','default_reverb_send'),
-            columns=(('sample_rate','interpolation','soundfont_stereo'),('soundfont_fx_policy','default_reverb_send')))
+            ('sample_rate','interpolation','soundfont_stereo','default_reverb_send','soundfont_fx_policy'),
+            columns=(('sample_rate','interpolation'),('soundfont_stereo','default_reverb_send')),
+            spanning=('soundfont_fx_policy',))
         self.audio_performance_card = self._settings_card('preferences.processing_title',
             ('synthesis_mode','voices','midi_cpu_limit','loading_mode','priority'),
             columns=(('synthesis_mode','voices','midi_cpu_limit'),('loading_mode','priority')))
@@ -5746,38 +6515,41 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.tabs.addTab(self.scroll, tr("preferences.tab_audio"))
         self.midi_input_card=NativeCard()
         input_body=set_layout(QVBoxLayout(self.midi_input_card),METRICS['card_padding'],METRICS['compact_content_gap'])
-        title=ElasticLabel(tr('preferences.restart_caption',label=tr('preferences.port_connections_title')));title.setObjectName('SectionTitle');input_body.addWidget(title)
-        self.midi_ports=NativeMidiPortSettingsPanel();input_body.addWidget(self.midi_ports,1)
+        port_header=control_row_layout()
+        title=ElasticLabel(tr('preferences.port_connections_title'));title.setObjectName('CardTitle');port_header.addWidget(title,1)
+        input_body.addLayout(port_header)
+        self.midi_ports=NativeMidiPortSettingsPanel(self.midi_input_card,header=port_header,runtime=owner.midi_input_runtime)
+        input_body.addWidget(self.midi_ports,1)
         self.midi_ports.changed.connect(self._mark_dirty)
-        self.midi_ports.changed.connect(self._refresh_restart_action)
+        self.midi_ports.refresh_requested.connect(self._refresh_midi_input_ports)
         make_horizontally_elastic(self.midi_input_card,QSizePolicy.Expanding)
         self.program_scroll, program_body = self._tab_page("preferences.tab_program")
-        self.color_theme = AnimatedComboBox()
-        for name in COLOR_THEMES:
-            self.color_theme.addItem(tr("appearance.palette_" + name), name)
+        self.color_theme = NativePaletteChoice()
         self.color_theme.setCurrentIndex(self.color_theme.findData(owner._color_theme))
         self.color_theme.currentIndexChanged.connect(self._preview_color_theme)
         self.program_card = self._settings_card('preferences.general_title',
-            ('startup_with_windows','minimize_to_tray','check_updates_on_startup','start_minimized','close_to_tray'),
-            columns=(('startup_with_windows','minimize_to_tray','check_updates_on_startup'),('start_minimized','close_to_tray')))
+            ('startup_with_windows','minimize_to_tray','check_updates_on_startup','start_minimized','close_to_tray','always_on_top'),
+            columns=(('startup_with_windows','minimize_to_tray','check_updates_on_startup'),('start_minimized','close_to_tray','always_on_top')))
         program_body.addWidget(self.program_card)
         general_grid=self.program_card.layout()
         self.program_card._form_start_row=2
-        general_grid.addWidget(self._row('appearance.color_theme',self.color_theme),1,0,1,2)
+        palette_row = self._row('appearance.color_theme', self.color_theme)
+        palette_label = palette_row.layout().itemAt(0).widget()
+        general_grid.addWidget(palette_row,1,0,1,2)
         for column,container in enumerate(next(cols for card,cols,_ in self._settings_cards if card is self.program_card)):
             general_grid.addWidget(container,2,column)
-        general_order=(self.color_theme,self.startup_with_windows,self.start_minimized,self.minimize_to_tray,self.close_to_tray)
+        general_order=(self.color_theme,self.startup_with_windows,self.start_minimized,self.minimize_to_tray,self.close_to_tray,self.always_on_top)
         for left,right in zip(general_order,general_order[1:]):QWidget.setTabOrder(left,right)
         self.main_log_card=self._settings_card('preferences.main_log_title',
             ('main_log_level','main_log_detail'),columns=(('main_log_level',),('main_log_detail',)))
         program_body.addWidget(self.main_log_card)
-        QWidget.setTabOrder(self.close_to_tray,self.main_log_level)
+        QWidget.setTabOrder(self.always_on_top,self.main_log_level)
         QWidget.setTabOrder(self.main_log_level,self.main_log_detail)
         mapper_card = NativeCard()
         self.mapper_card = mapper_card
         mapper_body = set_layout(QGridLayout(mapper_card), METRICS["card_padding"], METRICS["card_content_gap"])
         mapper_body.setSizeConstraint(QLayout.SetNoConstraint)
-        title=ElasticLabel(tr('player.mapper_title'));title.setObjectName('SectionTitle');mapper_body.addWidget(title,0,0,1,2)
+        title=ElasticLabel(tr('player.mapper_title'));title.setObjectName('CardTitle');mapper_body.addWidget(title,0,0,1,2)
         self.mapper_columns=tuple(WidthMeasuredPanel() for _ in range(2))
         connection,driver=(set_layout(QVBoxLayout(column),0,METRICS['compact_content_gap']) for column in self.mapper_columns)
         for index,column in enumerate(self.mapper_columns):
@@ -5857,11 +6629,12 @@ class NativeEnginePreferencesDialog(NativeDialog):
             ('midi_async','auto_reset_delay_s','cc6_direct_pitch_range','cc94_custom_delay_send'),
             columns=(('midi_async','auto_reset_delay_s'),('cc6_direct_pitch_range','cc94_custom_delay_send')))
         midi_body.addWidget(self.midi_policy_card)
-        self.system_reset_controls={}
-        self.system_reset_card,reset_grid=make_control_section(tr('preferences.system_reset_ignore_title'))
+        gap=METRICS["inner_card_gap"]
+        self.midi_policy_card.layout().setVerticalSpacing(gap)
         self.system_reset_options=WidthMeasuredPanel()
-        make_horizontally_elastic(self.system_reset_options,QSizePolicy.Preferred)
-        reset_options=WrappingControlLayout(self.system_reset_options,equal_cells=True,maximum_gap=48)
+        reset_options=WrappingControlLayout(self.system_reset_options,equal_cells=True,start_aligned=True)
+        reset_options.setSpacing(gap)
+        self.system_reset_controls={}
         for field,key,_inverted,mode in SYSTEM_RESET_RECEIVERS:
             toggle=NativeToggleSwitch(mode)
             toggle.setAccessibleName(tr('effect.ignore_system_reset',mode=mode))
@@ -5870,9 +6643,26 @@ class NativeEnginePreferencesDialog(NativeDialog):
             toggle.toggled.connect(lambda ignored,field=field:self._preview_system_reset_receive(field,not ignored))
             reset_options.addWidget(toggle)
             self.system_reset_controls[field]=toggle
-        reset_grid.addWidget(self.system_reset_options,0,0)
-        self.midi_policy_card.layout().addWidget(self.system_reset_card,2,0,1,2)
-        self.midi_policy_card._trailing_widgets=(self.system_reset_card,)
+        self.system_reset_row=self._row('preferences.system_reset_ignore_title',self.system_reset_options)
+
+        nwc_choices=WidthMeasuredPanel()
+        nwc_options=WrappingControlLayout(nwc_choices,equal_cells=True,start_aligned=True)
+        nwc_options.setSpacing(gap)
+        self.nwc_reset_buttons=QButtonGroup(self)
+        nwc_tip=tr("preferences.nwc_reset_detail")
+        for index,key in enumerate(("preferences.nwc_reset_unchanged","action.panic","action.reset")):
+            button=NativeRadioButton(tr(key))
+            button.setAccessibleDescription(nwc_tip)
+            self.nwc_reset_buttons.addButton(button,index)
+            nwc_options.addWidget(button)
+        self.nwc_reset_row=self._row('preferences.nwc_reset_action',nwc_choices)
+        self.nwc_reset_row.layout().itemAt(0).widget().setBuddy(self.nwc_reset_buttons.button(0))
+        install_effect_tooltip(nwc_tip,self.nwc_reset_row)
+        self._controls["nwc_reset_action"]=(self.nwc_reset_row,"nwc_reset_action","nwc_reset_detail")
+        self.midi_policy_card._preference_fields+=("nwc_reset_action",)
+        self.midi_policy_card._trailing_widgets=(self.system_reset_row,self.nwc_reset_row)
+        for index,row in enumerate(self.midi_policy_card._trailing_widgets,start=2):
+            self.midi_policy_card.layout().addWidget(row,index,0,1,2)
         midi_body.addWidget(self.midi_input_card,1)
         self._system_reset_connection=owner.system_reset_receive_changed.connect(self._refresh_system_reset_receive)
         self.diagnostics_scroll,diagnostics_body=self._tab_page('preferences.tab_diagnostics')
@@ -5897,31 +6687,38 @@ class NativeEnginePreferencesDialog(NativeDialog):
         # MIDI policy appears before the port editor,although the port editor
         # is constructed first. No domain callbacks are involved here.
         midi_order=(self.midi_timing,self.cc6_direct_pitch_range,self.auto_reset_delay_s,
-            self.cc94_custom_delay_send,*self.system_reset_controls.values(),
-            self.midi_ports.selector,self.midi_ports.add,self.midi_ports.remove,
-            self.midi_ports.name,self.midi_ports.virtual_in,self.midi_ports.virtual_out,
-            *self.midi_ports.devices.values(),self.midi_ports.refresh_button)
+            self.cc94_custom_delay_send,*self.system_reset_controls.values(),*self.nwc_reset_buttons.buttons(),
+            *self.midi_ports.focus_widgets())
         for left,right in zip(midi_order,midi_order[1:]):QWidget.setTabOrder(left,right)
         QWidget.setTabOrder(self.main_log_detail,self.windows_midi_default)
 
-        footer = set_layout(QHBoxLayout(), 0, METRICS["side_action_gap"])
+        self.preferences_footer=WidthMeasuredPanel()
+        footer=control_row_layout(self.preferences_footer)
+        footer.setSpacing(METRICS["side_action_gap"])
+        secondary=WidthMeasuredPanel()
+        secondary_actions=control_row_layout(secondary)
+        secondary_actions.setSpacing(footer.spacing())
+        primary=WidthMeasuredPanel()
+        primary_actions=control_row_layout(primary)
+        primary_actions.setSpacing(footer.spacing())
+        primary_actions.addStretch(1)
+        footer.addWidget(secondary,1)
+        footer.addWidget(primary)
         self.restore_defaults_button=make_action_button(tr('common.restore_defaults'),self.restore_defaults)
-        self.import_bmsynth_button=make_action_button(tr('preferences.import_bmsynth'),self.import_bmsynth)
-        footer.addWidget(self.restore_defaults_button);footer.addWidget(self.import_bmsynth_button)
-        footer.addStretch(1)
-        self.save_restart_button = make_action_button(tr("preferences.save_restart"), self.save_restart)
+        self.import_bmsynth_button=make_action_button(dialog_action(tr('preferences.import_bmsynth')),self.import_bmsynth)
+        secondary_actions.addWidget(self.restore_defaults_button,alignment=Qt.AlignLeft)
+        secondary_actions.addWidget(self.import_bmsynth_button,alignment=Qt.AlignLeft)
+        secondary_actions.addStretch(1)
+        self.save_restart_button=make_action_button(tr("preferences.save_restart"),self.save_restart)
         self.save_restart_button.hide()
-        footer.addWidget(self.save_restart_button)
-        self.save_close_button = make_action_button(tr("preferences.save_close"), self.save_close, primary=True)
+        self.save_close_button=make_action_button(tr("preferences.save_close"),self.save_close,primary=True)
         self.save_close_button.setDefault(True)
-        footer.addWidget(self.save_close_button)
-        footer.addWidget(make_action_button(tr("preferences.cancel"), self.reject))
-        for index in range(footer.count()):
-            button = footer.itemAt(index).widget()
-            if button is not None:
-                button.setMinimumWidth(0)
-                button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        root.addLayout(footer)
+        self.cancel_button=make_action_button(tr("preferences.cancel"),self.reject)
+        self.preferences_finish_buttons=(self.save_restart_button,self.save_close_button,self.cancel_button)
+        for button in self.preferences_finish_buttons:
+            primary_actions.addWidget(button,alignment=Qt.AlignRight)
+        root.addWidget(self.preferences_footer)
+        self.preferences_footer.installEventFilter(self)
         self.set_values(owner._pending_engine_preferences)
         # Live controls preview; no INI or startup-registration write until Save.
         self._loading = False
@@ -5933,12 +6730,12 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self._refresh_restart_action()
         self.recording_format.currentIndexChanged.connect(self._sync_recording_controls)
         self.recording_container.currentIndexChanged.connect(self._sync_recording_controls)
-        self.recording_rate_mode.currentIndexChanged.connect(self._sync_recording_controls)
+        self.recording_rate_mode.valueChanged.connect(self._sync_recording_controls)
         self.tabs.currentChanged.connect(self._sync_recording_controls)
         self._sync_recording_controls()
         for name in LIVE_PREFERENCE_FIELDS:
-            if name == "windows_midi_default":
-                continue  # System-facing preference crosses Save, not live editing.
+            if name in ("windows_midi_default", "nwc_reset_action"):
+                continue  # These preferences apply on Save.
             field = self._controls[name][0]
             signal = (field.toggled if isinstance(field, QCheckBox) else
                       field.currentIndexChanged if isinstance(field, AnimatedComboBox) else
@@ -5946,8 +6743,20 @@ class NativeEnginePreferencesDialog(NativeDialog):
                       self.recording_directory_edit.textChanged if name == "recording_directory" else field.valueChanged)
             signal.connect(self._preview_live)
         apply_native_text_metrics(self)
+        palette_column = self.startup_with_windows.parentWidget().parentWidget().layout()
         for rows in self._form_columns:
-            self._fit_label_column(rows)
+            extra_labels = (palette_label,) if rows is palette_column else ()
+            self._fit_label_column(rows, *extra_labels)
+        reset_rows = self.midi_policy_card._trailing_widgets
+        align_form_labels((row.layout().itemAt(0).widget() for row in reset_rows),
+                          METRICS['form_label_width'], METRICS['form_column_gap'])
+        # Both rows end at the same visual column. The four-switch row sets
+        # the maximum extent; the three radio cells divide the same space.
+        reset_gaps = reset_options.count()-1
+        reset_extent = reset_options.sizeHint().width()+reset_gaps*(reset_options.maximum_gap-reset_options.spacing())
+        nwc_gaps = nwc_options.count()-1
+        nwc_cells = nwc_options.sizeHint().width()-nwc_gaps*nwc_options.spacing()
+        nwc_options.maximum_gap = max(gap,(reset_extent-nwc_cells)//nwc_gaps)
         for card, _columns, _single in self._settings_cards:
             self._reflow_settings_card(card)
         self._recording_info_timer = QTimer(self)
@@ -5955,8 +6764,9 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self._recording_info_timer.timeout.connect(self._update_recording_info)
         self.tabs.currentChanged.connect(self._recording_tab_changed)
         self.tabs.currentChanged.connect(self._mapper_tab_changed)
-        for field in (self.recording_container, self.recording_format, self.recording_bitrate, self.recording_rate_mode):
+        for field in (self.recording_container, self.recording_format, self.recording_bitrate):
             field.currentIndexChanged.connect(self._update_recording_info)
+        self.recording_rate_mode.valueChanged.connect(self._update_recording_info)
         self.recording_directory_edit.textChanged.connect(self._update_recording_info)
         self.recording_basename.textChanged.connect(self._update_recording_info)
         self.recording_timestamp.toggled.connect(self._update_recording_info)
@@ -5966,8 +6776,8 @@ class NativeEnginePreferencesDialog(NativeDialog):
         palette = widget_palette(owner)
         for checkbox in self.findChildren(OutlineCheckBox):
             checkbox.set_theme(palette)
-        self._refresh_theme_icons()
         owner._system_reset_persistence_baseline=dict(self._original_system_reset_receivers)
+        owner._color_theme_persistence_baseline=self._original_color_theme
         self._fit_pending = False
         self._opening_fit = True
         self._window_motion = NativeWindowSizeMotion(self)
@@ -5979,13 +6789,14 @@ class NativeEnginePreferencesDialog(NativeDialog):
             self.restore_driver_notice_button.hide()
 
     def _refresh_midi_input_ports(self,*_args):
+        self._refresh_mapper_status()
         self.midi_ports.refresh_devices()
 
     def _queue_content_fit(self, *_args):
         if not self.isVisible() or getattr(self, "_fit_pending", False):
             return
         self._fit_pending = True
-        QTimer.singleShot(0, self._fit_current_page)
+        QTimer.singleShot(0, self, self._fit_current_page)
 
     def _fit_current_page(self):
         self._fit_pending = False
@@ -6029,7 +6840,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
             self._window_motion.start(target, expanding=True)
         root.activate()
 
-    def _settings_card(self, title_key, names, *, single_column=True, columns=None,subsection=False):
+    def _settings_card(self, title_key, names, *, single_column=True, columns=None, subsection=False, spanning=()):
         card = QFrame() if subsection else NativeCard()
         card._preference_fields=tuple(names)
         if subsection:card.setObjectName('PreferencesSubsection')
@@ -6038,30 +6849,43 @@ class NativeEnginePreferencesDialog(NativeDialog):
         card._form_start_row=1 if title_key else 0
         card._group_heading=None
         if title_key:
-            title = ElasticLabel(tr(title_key));title.setObjectName('SectionTitle')
+            title = ElasticLabel(tr(title_key));title.setObjectName('SectionTitle' if subsection else 'CardTitle')
             layout.addWidget(title,0,0,1,2);card._group_heading=title
         field_columns=columns if columns is not None else (names,)
-        if tuple(name for fields in field_columns for name in fields)!=tuple(names):
+        if (*[name for fields in field_columns for name in fields], *spanning) != tuple(names):
             raise ValueError('Preference columns must cover the ordered fields exactly once')
+        card._distributed_choices = any(isinstance(self._controls[name][0], NativeRadioChoice) for name in names)
+
+        def field_row(name):
+            field, key, detail = self._controls[name]
+            return self._row("preferences." + key, field, "preferences." + detail,
+                             restart_required=name in RESTART_REQUIRED_FIELDS)
+
         columns = []
         for column, fields in enumerate(field_columns):
             if not fields:
                 continue
-            container = QWidget()
+            wrapping = card._distributed_choices or any(self._controls[name][0].hasHeightForWidth() for name in fields)
+            container = WidthMeasuredPanel() if wrapping else QWidget()
             container.setMinimumWidth(0)
             rows = set_layout(QVBoxLayout(container), 0, CARD_ROW_GAPS["preferences"])
             rows.setAlignment(Qt.AlignTop)
             for name in fields:
-                field, key, detail = self._controls[name]
-                rows.addWidget(self._row("preferences." + key, field, "preferences." + detail,
-                    restart_required=name in RESTART_REQUIRED_FIELDS))
+                rows.addWidget(field_row(name))
+            if card._distributed_choices:
+                make_horizontally_elastic(container, QSizePolicy.Preferred)
             self._form_columns.append(rows)
             columns.append(container)
             layout.addWidget(container, card._form_start_row, column, Qt.AlignTop)
             layout.setColumnStretch(column, 1)
-        if len(field_columns)>1:
-            reading_order=[fields[row] for row in range(max(map(len,field_columns)))
-                           for fields in field_columns if row<len(fields)]
+        card._spanning_forms = tuple(field_row(name) for name in spanning)
+        if card._spanning_forms:
+            card._trailing_widgets = card._spanning_forms
+            for index, row in enumerate(card._spanning_forms, card._form_start_row + 1):
+                layout.addWidget(row, index, 0, 1, 2)
+        if len(field_columns)>1 or spanning:
+            reading_order = [fields[row] for row in range(max(map(len, field_columns)))
+                             for fields in field_columns if row < len(fields)] + list(spanning)
             for left,right in zip(reading_order,reading_order[1:]):
                 QWidget.setTabOrder(self._controls[left][0],self._controls[right][0])
         make_horizontally_elastic(card, QSizePolicy.Fixed)
@@ -6071,9 +6895,28 @@ class NativeEnginePreferencesDialog(NativeDialog):
 
     def eventFilter(self, watched, event):
         if event.type()==QEvent.Resize and watched is getattr(self,'mapper_card',None):self._reflow_mapper_card()
+        if event.type() in (QEvent.Resize,QEvent.FontChange,QEvent.StyleChange) and watched is getattr(self,'preferences_footer',None):
+            self._reflow_preferences_footer()
         if event.type() == QEvent.Resize and any(watched is card for card, *_ in getattr(self, "_settings_cards", ())):
             self._reflow_settings_card(watched)
         return super().eventFilter(watched, event)
+
+    def _reflow_preferences_footer(self):
+        panel=self.preferences_footer
+        footer=panel.layout()
+        secondary=footer.itemAt(0).widget().layout()
+        primary=footer.itemAt(1).widget().layout()
+        visible=[button for button in self.preferences_finish_buttons if not button.isHidden()]
+        secondary_buttons=(self.restore_defaults_button,self.import_bmsynth_button)
+        left_width=sum(button.sizeHint().width() for button in secondary_buttons)+secondary.spacing()
+        right_width=sum(button.sizeHint().width() for button in visible)+max(0,len(visible)-1)*primary.spacing()
+        direction=QHBoxLayout.Direction
+        footer_direction=(direction.TopToBottom if panel.width()<left_width+footer.spacing()+right_width else direction.LeftToRight)
+        primary_direction=(direction.TopToBottom if panel.width()<right_width else direction.LeftToRight)
+        secondary_direction=(direction.TopToBottom if panel.width()<left_width else direction.LeftToRight)
+        if secondary.direction()!=secondary_direction:secondary.setDirection(secondary_direction)
+        if primary.direction()!=primary_direction:primary.setDirection(primary_direction)
+        if footer.direction()!=footer_direction:footer.setDirection(footer_direction)
 
     def _reflow_mapper_card(self):
         # About22 text cells per column keeps help readable at normal size.
@@ -6085,22 +6928,37 @@ class NativeEnginePreferencesDialog(NativeDialog):
         """Content-measured hints, not fixed columns or a dialog width floor."""
         _card, columns, single = next(item for item in self._settings_cards if item[0] is card)
         widths = []
-        for container in columns:
+        form_captions = []
+        for column, container in enumerate(columns):
             preferred = 0
+            if card._distributed_choices:
+                captions = [container.layout().itemAt(i).widget().layout().itemAt(0).widget()
+                            for i in range(container.layout().count())
+                            if not container.layout().itemAt(i).widget().isHidden()]
+                if column == 0:
+                    captions.extend(row.layout().itemAt(0).widget() for row in card._spanning_forms)
+                align_form_labels(captions, 0, 2)
+                form_captions.extend(captions)
             for i in range(container.layout().count()):
                 row = container.layout().itemAt(i).widget()
                 if row.isHidden():
                     continue
-                label = row.layout().itemAtPosition(0, 0).widget()
-                field = row.layout().itemAtPosition(0, 1).widget()
+                label = row.layout().itemAt(0).widget()
+                field = row.layout().itemAt(1).widget()
                 control_width = (max((field.fontMetrics().horizontalAdvance(field.itemText(j)) for j in range(field.count())), default=0) + 40
-                                 if isinstance(field, AnimatedComboBox) else field.sizeHint().width() if isinstance(field,QCheckBox) else 96)
-                preferred = max(preferred, label.sizeHint().width() + control_width + METRICS["form_column_gap"])
-                badge=row.layout().itemAtPosition(0,2)
+                                 if isinstance(field, AnimatedComboBox) else field.sizeHint().width() if isinstance(field,(QCheckBox,NativeRadioChoice)) else 96)
+                gap = METRICS["form_column_gap"]
+                if card._distributed_choices and isinstance(field, NativeRadioChoice):
+                    # Qt's grid may round the chosen share down by a pixel.
+                    control_width += 3
+                preferred = max(preferred, label.sizeHint().width() + control_width + gap)
+                badge=row.layout().itemAt(2)
                 if badge:preferred=max(preferred,label.sizeHint().width()+control_width+badge.widget().sizeHint().width()+2*METRICS['form_column_gap'])
             widths.append(preferred)
         start=getattr(card,'_form_start_row',1)
         stacked=reflow_card_columns(card,columns,widths,force_stack=single,start_row=start)
+        if card._distributed_choices and stacked:
+            align_form_labels(form_captions, 0, 2)
         for index,widget in enumerate(getattr(card,'_trailing_widgets',())):
             card.layout().removeWidget(widget)
             card.layout().addWidget(widget,start+(len(columns) if stacked else 1)+index,0,1,2)
@@ -6109,11 +6967,16 @@ class NativeEnginePreferencesDialog(NativeDialog):
         # calculation to squeeze 28px fixed rows on top of one another. Only
         # the vertical content extent is constrained; horizontal floors remain0.
         for container in columns:
+            if isinstance(container,WidthMeasuredPanel):
+                continue
             rows = container.layout()
             visible = [rows.itemAt(i).widget() for i in range(rows.count())
                        if not rows.itemAt(i).widget().isHidden()]
             container.setMinimumHeight(sum(row.height() for row in visible)
                 + max(0, len(visible)-1)*rows.spacing())
+        heading = card._group_heading
+        if heading is not None:
+            heading.setMinimumHeight(heading.sizeHint().height())
         card.layout().invalidate()
         # Keep fixed control rows admitted through their column minima.
         # Do not cache the wrapping subsection's CURRENT height as a card
@@ -6131,7 +6994,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         content = WidthMeasuredPanel()
         content.setObjectName("PreferencesContent")
         content.setMinimumSize(0, 0)
-        body = bordered_page_layout(QVBoxLayout(content),METRICS['section_gap'])
+        body = bordered_page_layout(card_stack_layout(content),METRICS['inner_card_gap'])
         body.setSizeConstraint(QLayout.SetNoConstraint)
         scroll.setWidget(content)
         self.tabs.addTab(scroll, tr(title))
@@ -6149,7 +7012,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.recording_rf64.parentWidget().setEnabled(not busy and kind == "wav")
         self.recording_dither.parentWidget().setEnabled(not busy and (pcm or integer) and self.recording_format.currentData() != "float32")
         self.recording_codec_card.setVisible(not pcm)
-        mode = self.recording_rate_mode.currentData()
+        mode = self.recording_rate_mode.value()
         visible = {"recording_compression": integer, "recording_vorbis_quality": kind == "vorbis",
                    "recording_rate_mode": kind in ("mp3", "opus"), "recording_bitrate": kind == "opus" or kind == "mp3" and mode == "cbr",
                    "recording_mp3_quality": kind == "mp3" and mode == "vbr", "recording_opus_complexity": kind == "opus"}
@@ -6223,7 +7086,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
             if encoded_rate != rate:
                 source = tr("recording.source_converted", source_rate=rate, rate=encoded_rate, channels=channels)
         if kind in ("mp3", "opus", "vorbis"):
-            variable = kind == "vorbis" or self.recording_rate_mode.currentData() == "vbr"
+            variable = kind == "vorbis" or self.recording_rate_mode.value() == "vbr"
             mb = (self.recording_bitrate.currentData() or 192) * 1000 * 60 / 8 / 1_000_000
             if variable:
                 summary = tr("recording.summary_variable", source=source)
@@ -6289,15 +7152,6 @@ class NativeEnginePreferencesDialog(NativeDialog):
 
     def _preview_color_theme(self, *_args):
         self.owner.set_color_theme(self.color_theme.currentData())
-        for checkbox in self.findChildren(OutlineCheckBox):
-            checkbox.set_theme(widget_palette(self.owner))
-        self.owner._queue_ui_save()
-
-    def _refresh_theme_icons(self):
-        for index, name in enumerate(COLOR_THEMES):
-            swatch = QPixmap(14, 14)
-            swatch.fill(QColor(color_palette(self.owner._dark, name).accent))
-            self.color_theme.setItemIcon(index, QIcon(swatch))
 
     def _refresh_system_reset_receive(self,field,receive):
         control=self.system_reset_controls[field]
@@ -6312,25 +7166,37 @@ class NativeEnginePreferencesDialog(NativeDialog):
             self._show_apply_failure(error)
 
     @staticmethod
-    def _row(key, field, detail_key=None,*,label_text=None,detail_text=None,restart_required=False):
-        row = QWidget()
-        row.setFixedHeight(FORM_ROW_HEIGHT)
-        grid = set_layout(QGridLayout(row), 0, METRICS["form_column_gap"])
-        grid.setColumnStretch(1, 1)
+    def _row(key, field, detail_key=None, *, label_text=None, detail_text=None, restart_required=False):
+        wrapping = field.hasHeightForWidth()
+        row = WidthMeasuredPanel() if wrapping else QWidget()
+        if not wrapping:
+            row.setFixedHeight(FORM_ROW_HEIGHT)
+        grid = set_layout(FormRowLayout(row) if wrapping else QGridLayout(row),
+                          0, METRICS["form_column_gap"])
+        if not wrapping:
+            grid.setColumnStretch(1, 1)
         caption=tr(key) if label_text is None else label_text
-        label = ElasticLabel(tr('preferences.restart_caption',label=caption) if restart_required else caption, preferred_width=METRICS["form_label_width"])
-        label.setObjectName("FieldLabel")
+        label = FormCaptionLabel(tr('preferences.restart_caption',label=caption) if restart_required else caption,
+                                 field, preferred_width=METRICS["form_label_width"])
         label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         field.setAccessibleName(tr(key) if label_text is None else label_text)
         if isinstance(field, AnimatedComboBox):
             field.setProperty("fitPreferenceContents", True)
-        make_horizontally_elastic(field)
-        grid.addWidget(label, 0, 0)
-        grid.addWidget(field, 0, 1)
+        make_horizontally_elastic(field, QSizePolicy.Preferred if wrapping else QSizePolicy.Fixed)
+        if wrapping:
+            if isinstance(field,NativeRadioChoice):
+                label.setWordWrap(True)
+                label.setBuddy(field)
+            grid.addWidget(label)
+            grid.addWidget(field)
+        else:
+            grid.addWidget(label, 0, 0)
+            grid.addWidget(field, 0, 1)
         if detail_key or detail_text is not None:
             explanation = tr(detail_key) if detail_text is None else detail_text
             rendered = tooltip_display_text(explanation)
-            for widget in (row, label, field):
+            options = field.buttons if isinstance(field, NativeRadioChoice) else ()
+            for widget in (row, label, field, *options):
                 widget.setToolTip(rendered)
                 widget.setAccessibleDescription(explanation)
         if restart_required:
@@ -6341,14 +7207,14 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.restart_legend.setVisible(self.tabs.currentWidget() in (self.scroll,self.midi_input_scroll,self.diagnostics_scroll))
 
     @staticmethod
-    def _fit_label_column(rows):
+    def _fit_label_column(rows, *extra_labels):
         """Size a settings column from its translated captions, not a guess."""
-        labels = []
+        labels = list(extra_labels)
         for index in range(rows.count()):
             item = rows.itemAt(index)
             row = item.widget() if item else None
             grid = row.layout() if row else None
-            caption = grid.itemAtPosition(0, 0) if isinstance(grid, QGridLayout) else None
+            caption = grid.itemAt(0) if isinstance(grid, (QGridLayout,FormRowLayout)) else None
             label = caption.widget() if caption else None
             if isinstance(label, ElasticLabel):
                 labels.append(label)
@@ -6363,7 +7229,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.exclusive_block_ms.setValue(values.exclusive_block_ms)
         self.voices.setValue(values.voices)
         self.midi_cpu_limit.setCurrentIndex(self.midi_cpu_limit.findData(values.midi_cpu_limit))
-        self.soundfont_stereo.setCurrentIndex(self.soundfont_stereo.findData(values.soundfont_stereo))
+        self.soundfont_stereo.setValue(values.soundfont_stereo)
         sync_recording_formats(self.recording_format,values.recording_container)
         index=self.recording_format.findData(values.recording_format)
         self.recording_format.setCurrentIndex(index if index>=0 else self.recording_format.findData('pcm24'))
@@ -6375,22 +7241,23 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self.recording_timestamp.setChecked(values.recording_timestamp)
         for name in ("recording_compression", "recording_vorbis_quality", "recording_mp3_quality", "recording_opus_complexity"):
             getattr(self, name).setValue(getattr(values, name))
-        for name in ("recording_bitrate", "recording_rate_mode"):
-            field = getattr(self, name)
-            field.setCurrentIndex(field.findData(getattr(values, name)))
+        self.recording_bitrate.setCurrentIndex(self.recording_bitrate.findData(values.recording_bitrate))
+        self.recording_rate_mode.setValue(values.recording_rate_mode)
         self.interpolation.setCurrentIndex(self.interpolation.findData(values.interpolation))
-        self.midi_timing.setCurrentIndex(self.midi_timing.findData(values.midi_async))
-        self.loading_mode.setCurrentIndex(self.loading_mode.findData(values.loading_mode))
+        self.midi_timing.setValue(values.midi_async)
+        self.loading_mode.setValue(values.loading_mode)
         self.default_reverb_send.setValue(values.default_reverb_send)
-        self.soundfont_fx_policy.setCurrentIndex(self.soundfont_fx_policy.findData(values.soundfont_fx_policy))
+        self.soundfont_fx_policy.setValue(values.soundfont_fx_policy)
         self.priority.setCurrentIndex(self.priority.findData(values.priority))
         self.auto_reset_delay_s.setValue(values.auto_reset_delay_s)
         self.cc6_direct_pitch_range.setChecked(values.cc6_direct_pitch_range)
         self.cc94_custom_delay_send.setChecked(values.cc94_custom_delay_send)
+        self.nwc_reset_buttons.button(NWC_RESET_ACTIONS.index(values.nwc_reset_action)).setChecked(True)
         self.startup_with_windows.setChecked(values.startup_with_windows)
         self.start_minimized.setChecked(values.start_minimized)
         self.minimize_to_tray.setChecked(values.minimize_to_tray)
         self.close_to_tray.setChecked(values.close_to_tray)
+        self.always_on_top.setChecked(values.always_on_top)
         self.check_updates_on_startup.setChecked(values.check_updates_on_startup)
         self.windows_midi_default.setChecked(values.windows_midi_default)
         self.main_log_level.setCurrentIndex(self.main_log_level.findData(values.main_log_level))
@@ -6407,23 +7274,20 @@ class NativeEnginePreferencesDialog(NativeDialog):
 
     def _restart_changes(self):
         values = self._values()
-        changed=tuple(name for name in RESTART_REQUIRED_FIELDS
-                     if getattr(values, name) != getattr(self.owner._engine_preferences, name))
-        if hasattr(self,'midi_ports'):
-            try:
-                if self.midi_ports.settings().serialized()!=self.owner.midi_input_runtime.port_settings.serialized():changed+=('midi_ports',)
-            except ValueError:changed+=('midi_ports',)
-        return changed
+        timing=output_timing_availability(self.owner.selected_output_device())
+        return tuple(name for name in RESTART_REQUIRED_FIELDS if timing.get(name,True)
+                     and getattr(values, name) != getattr(self.owner._engine_preferences, name))
 
     def _refresh_restart_action(self, *_args):
         if not hasattr(self, "save_restart_button"):
             return
         changed = self._restart_changes()
         self.save_restart_button.setVisible(bool(changed))
+        self._reflow_preferences_footer()
         set_button_primary(self.save_close_button, not changed, default=not changed)
         set_button_primary(self.save_restart_button, bool(changed), default=bool(changed))
         self.save_restart_button.setToolTip(tr("preferences.restart_required_for",
-            settings="\n".join(tr('midi_ports.title') if name=='midi_ports' else tr("preferences." + self._controls[name][1]) for name in changed)) if changed else "")
+            settings="\n".join(tr("preferences." + self._controls[name][1]) for name in changed)) if changed else "")
 
     def restore_defaults(self):
         defaults = EnginePreferences()
@@ -6434,9 +7298,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         self._loading = True
         try:
             self.set_values(defaults)
-            from settings import MidiPortSettings
-            self.midi_ports.rows=[dict(row) for row in MidiPortSettings().normalized().ports]
-            self.midi_ports.index=0;self.midi_ports._show_row()
+            self.midi_ports.restore_defaults()
             for field,*_ in SYSTEM_RESET_RECEIVERS:self.owner.set_system_reset_receive(field,True)
         finally:
             self._loading = False
@@ -6457,7 +7319,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
             exclusive_block_ms=self.exclusive_block_ms.value(),
             voices=self.voices.value(),
             midi_cpu_limit=int(self.midi_cpu_limit.currentData()),
-            soundfont_stereo=bool(self.soundfont_stereo.currentData()),
+            soundfont_stereo=bool(self.soundfont_stereo.value()),
             recording_format=str(self.recording_format.currentData()),
             recording_dither=self.recording_dither.isChecked(),
             recording_rf64=self.recording_rf64.isChecked(),
@@ -6470,20 +7332,22 @@ class NativeEnginePreferencesDialog(NativeDialog):
             recording_mp3_quality=self.recording_mp3_quality.value(),
             recording_opus_complexity=self.recording_opus_complexity.value(),
             recording_bitrate=int(self.recording_bitrate.currentData()),
-            recording_rate_mode=str(self.recording_rate_mode.currentData()),
+            recording_rate_mode=str(self.recording_rate_mode.value()),
             interpolation=int(self.interpolation.currentData()),
-            midi_async=bool(self.midi_timing.currentData()),
+            midi_async=self.midi_timing.value(),
             default_reverb_send=self.default_reverb_send.value(),
-            soundfont_fx_policy=str(self.soundfont_fx_policy.currentData()),
+            soundfont_fx_policy=str(self.soundfont_fx_policy.value()),
             priority=str(self.priority.currentData()),
             auto_reset_delay_s=self.auto_reset_delay_s.value(),
             cc6_direct_pitch_range=self.cc6_direct_pitch_range.isChecked(),
             cc94_custom_delay_send=self.cc94_custom_delay_send.isChecked(),
-            loading_mode=int(self.loading_mode.currentData()),
+            nwc_reset_action=NWC_RESET_ACTIONS[self.nwc_reset_buttons.checkedId()],
+            loading_mode=int(self.loading_mode.value()),
             startup_with_windows=self.startup_with_windows.isChecked(),
             start_minimized=self.start_minimized.isChecked(),
             minimize_to_tray=self.minimize_to_tray.isChecked(),
             close_to_tray=self.close_to_tray.isChecked(),
+            always_on_top=self.always_on_top.isChecked(),
             windows_midi_default=self.windows_midi_default.isChecked(),
         )
 
@@ -6509,7 +7373,8 @@ class NativeEnginePreferencesDialog(NativeDialog):
                 self.priority.blockSignals(blocked)
                 return False
         try:
-            self.owner.apply_live_preferences(self._values())
+            self.owner.apply_live_preferences(replace(self._values(),
+                nwc_reset_action=self.owner._engine_preferences.nwc_reset_action))
         except (AudioStartError, SoundFontRuntimeError, OSError, ValueError) as exc:
             # Keep failed controls honest: the form must reflect actual live
             # state, while preserving unrelated staged restart choices.
@@ -6545,8 +7410,8 @@ class NativeEnginePreferencesDialog(NativeDialog):
             except (AudioStartError, SoundFontRuntimeError, OSError, ValueError,RuntimeError) as exc:
                 self._show_apply_failure(exc)
                 return
-            self.owner._color_theme = self._original_color_theme
-            self.owner._queue_ui_save()
+            self.owner.set_color_theme(self._original_color_theme)
+        self.owner._color_theme_persistence_baseline=None
         if self._system_reset_connection is not None:
             self.owner._system_reset_persistence_baseline=None
             QObject.disconnect(self._system_reset_connection);self._system_reset_connection=None
@@ -6571,7 +7436,11 @@ class NativeEnginePreferencesDialog(NativeDialog):
     def _save(self, restart=False):
         try:port_settings=self.midi_ports.settings()
         except ValueError as error:
-            NativeMessageBox.warning(self,tr('preferences.title'),str(error));return
+            self.tabs.setCurrentWidget(self.midi_input_scroll)
+            self.midi_ports.name_error.setText(str(error))
+            self.midi_ports.name_error.show()
+            self.midi_input_scroll.ensureWidgetVisible(self.midi_ports.name_error)
+            return
         values = self._values().validate()
         if values.sample_rate != self.owner._engine_preferences.sample_rate:
             try:
@@ -6591,17 +7460,47 @@ class NativeEnginePreferencesDialog(NativeDialog):
             return
         old_startup = is_windows_startup_enabled()
         recovery = bool(os.environ.get('ABMSYNTH_RECOVERY_PROFILE'))
+        old_ports=self.owner.midi_input_runtime.port_settings
+        ports_applied=False
+        mapper_changed=False
+        nwc_applied=False
+        previous_nwc=self.owner._engine_preferences.nwc_reset_action
+        previous_default=self.owner._pending_engine_preferences.windows_midi_default
         try:
+            writer=self.owner._settings_writer
+            writer.flush(retry_failed=True)
+            self.owner.apply_midi_port_settings(port_settings)
+            ports_applied=True
             if not recovery and old_startup != values.startup_with_windows:
                 set_windows_startup_enabled(values.startup_with_windows)
-            engine_values=engine_ini_values(values)
-            self.owner._settings_writer.submit({'Engine':engine_values,'MIDI Ports':{'Configuration':port_settings.serialized()}},
-                owned_keys={'Engine':set(engine_values),'MIDI Ports':{'Configuration'}})
-            self.owner._settings_writer.flush()  # Explicit Save: durable before close/restart.
             if not recovery and not os.environ.get("ABMSYNTH_UI_ONLY"):
                 from windows_integration import set_midi_mapper_enabled
                 set_midi_mapper_enabled(values.windows_midi_default)
-        except (OSError, ValueError) as exc:
+                mapper_changed=True
+            if values.nwc_reset_action!=previous_nwc:
+                self.owner.apply_live_preferences(replace(self.owner._engine_preferences,nwc_reset_action=values.nwc_reset_action))
+                nwc_applied=True
+            engine_values=engine_ini_values(values)
+            # A refused explicit Save must not leave a failed draft queued for
+            # a later automatic write after the runtime connections roll back.
+            update_sections({'Engine':engine_values,'MIDI Ports':{'Configuration':port_settings.serialized()}},
+                writer.path,owned_keys={'Engine':set(engine_values),'MIDI Ports':{'Configuration'}})
+        except (OSError, RuntimeError, ValueError) as exc:
+            if nwc_applied:
+                try:
+                    self.owner.apply_live_preferences(replace(self.owner._engine_preferences,nwc_reset_action=previous_nwc))
+                except (OSError, RuntimeError, ValueError) as restore_error:
+                    self.owner.append_log(str(restore_error))
+            if ports_applied:
+                try:
+                    self.owner.apply_midi_port_settings(old_ports)
+                except (OSError, RuntimeError, ValueError) as restore_error:
+                    exc=RuntimeError(tr('midi_ports.restore_failed',error=restore_error))
+            if mapper_changed:
+                try:
+                    set_midi_mapper_enabled(previous_default)
+                except OSError:
+                    pass
             if not recovery and old_startup != values.startup_with_windows:
                 try:
                     set_windows_startup_enabled(old_startup)
@@ -6610,16 +7509,22 @@ class NativeEnginePreferencesDialog(NativeDialog):
             NativeMessageBox.warning(self, tr("preferences.title"), tr("preferences.save_failed", error=exc))
             return
         self.owner._pending_engine_preferences = values
+        inactive_timing={name:getattr(values,name) for name,active in
+                         output_timing_availability(self.owner.selected_output_device()).items() if not active}
+        self.owner._engine_preferences=replace(self.owner._engine_preferences,**inactive_timing)
         # Live state already reflects the form; only creation/launch values
         # stay pending until the next launch. No stream reset occurs here.
         self.owner._ui_save_timer.stop()
         policy_baseline=self.owner._system_reset_persistence_baseline
+        color_baseline=self.owner._color_theme_persistence_baseline
         self.owner._system_reset_persistence_baseline=None
+        self.owner._color_theme_persistence_baseline=None
         self.owner._save_ui_values()
         try:
             self.owner._settings_writer.flush()
         except (OSError, ValueError) as exc:
             self.owner._system_reset_persistence_baseline=policy_baseline
+            self.owner._color_theme_persistence_baseline=color_baseline
             NativeMessageBox.warning(self, tr("preferences.title"), tr("preferences.save_failed", error=exc))
             return
         self.accept()
@@ -6637,7 +7542,7 @@ class NativeEnginePreferencesDialog(NativeDialog):
         prompt.setWindowTitle(tr("preferences.unapplied_title"))
         prompt.setIcon(QMessageBox.Warning)
         prompt.setText(tr("preferences.unapplied_body", settings="\n".join(
-            tr('midi_ports.title') if name=='midi_ports' else tr("preferences." + self._controls[name][1]) for name in changes)))
+            tr("preferences." + self._controls[name][1]) for name in changes)))
         now = prompt.addButton(tr("preferences.save_restart"), QMessageBox.AcceptRole)
         later = prompt.addButton(tr("preferences.save_next_launch"), QMessageBox.ActionRole)
         cancel = prompt.addButton(tr("common.cancel"), QMessageBox.RejectRole)
@@ -8441,6 +9346,8 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
                 entry_domain=parameter.entry_domain,edit_context=self._selected_preset_keys)
             grid.addWidget(field,0,column);grid.setColumnStretch(column,1)
             self.preset_extension_controls[key]=field
+            if key == 'fine_tuning':
+                add_section_action(container, field.tuning_unit_choice())
         container.disclosure.set_expanded(True,refresh_extent=True)
         return container
 
@@ -8678,12 +9585,12 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
             (tr("group.export_nwc_gm"), "nwc_gm"),
             (tr("group.export_ins"), "ins"),
         ):
-            action = export_menu.addAction(caption)
+            action = export_menu.addAction(dialog_action(caption))
             action.triggered.connect(lambda _checked=False, kind=format_name: self.export_instruments(kind))
         self.export_button.setMenu(export_menu)
         header.addSpacing(METRICS["compact_content_gap"])
         header.addWidget(self.export_button)
-        header.addWidget(make_action_button(tr('support.group_files'), self.open_group_files))
+        header.addWidget(make_action_button(dialog_action(tr('support.group_files')), self.open_group_files))
         header.addStretch(1)
         header.addWidget(make_action_button(tr("action.new_group"), self.new_group))
         root.addLayout(header)
@@ -8768,7 +9675,7 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
 
     def _group_page(self):
         page = QWidget()
-        layout = bordered_page_layout(QVBoxLayout(page), METRICS["section_gap"])
+        layout = bordered_page_layout(card_stack_layout(page), METRICS["inner_card_gap"])
         card = NativeCard()
         self.font_card = card
         card.setMinimumHeight(0)
@@ -8850,8 +9757,8 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         self.lsb_mapping_section,lsb_body=make_control_section(tr('mapping.section'),tr('mapping.section_help'),collapsible=True)
         self.lsb_mapping_section.disclosure_button.setChecked(bool(self.group.mappings))
         actions=control_row_layout()
-        self.lsb_mapping_add=make_action_button(tr('mapping.add'),lambda:self._edit_lsb_mapping())
-        self.lsb_mapping_edit=make_action_button(tr('mapping.edit'),lambda:self._edit_lsb_mapping(True))
+        self.lsb_mapping_add=make_action_button(dialog_action(tr('mapping.add')),lambda:self._edit_lsb_mapping())
+        self.lsb_mapping_edit=make_action_button(dialog_action(tr('mapping.edit')),lambda:self._edit_lsb_mapping(True))
         self.lsb_mapping_remove=make_action_button(tr('common.delete'),self._remove_lsb_mapping)
         for button in (self.lsb_mapping_add,self.lsb_mapping_edit,self.lsb_mapping_remove):actions.addWidget(button)
         actions.addStretch(1);lsb_body.addLayout(actions,0,0)
@@ -8877,9 +9784,9 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
 
     def _settings_page(self):
         page = QWidget()
-        layout = bordered_page_layout(QHBoxLayout(page), METRICS["section_gap"])
+        layout = bordered_page_layout(QHBoxLayout(page), METRICS["inner_card_gap"])
         split = QSplitter(Qt.Horizontal)
-        split.setHandleWidth(METRICS["section_gap"])
+        split.setHandleWidth(METRICS["inner_card_gap"])
         layout.addWidget(split)
 
         left = NativeCard()
@@ -8899,18 +9806,21 @@ class NativeLiveSoundFontGroupDialog(NativeDialog):
         filter_bar = QFrame()
         filter_bar.setObjectName("NativeFilterBar")
         filters = set_layout(QHBoxLayout(filter_bar), (3, 3, 3, 3), METRICS["compact_content_gap"])
-        self.filter_group = QButtonGroup(filter_bar)
+        filter_choices = WidthMeasuredPanel()
+        choice_layout = WrappingControlLayout(filter_choices, equal_cells=True, maximum_gap=None)
+        choice_layout.setSpacing(filters.spacing())
+        filters.addWidget(filter_choices, 1)
+        self.filter_group = QButtonGroup(filter_choices)
         self.filter_group.setExclusive(True)
         self.filter_all = NativeFilterButton(tr("group.filter_all"), filter_bar)
         self.filter_played = NativeFilterButton(tr("group.filter_played"), filter_bar)
         self.filter_mapped = NativeFilterButton(tr("group.filter_mapped"), filter_bar)
         for control in (self.filter_all, self.filter_played, self.filter_mapped):
             self.filter_group.addButton(control)
-            filters.addWidget(control)
+            choice_layout.addWidget(control)
         self.filter_all.setChecked(True)
         for control in (self.filter_all, self.filter_played, self.filter_mapped):
             control.toggled.connect(self.populate_instruments)
-        filters.addStretch(1)
         self.clear_played_button = make_action_button(
             tr("group.clear_played_history"), self.clear_played_history,
         )

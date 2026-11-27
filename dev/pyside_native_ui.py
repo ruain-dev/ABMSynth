@@ -94,7 +94,7 @@ from effect_control import (
     audio_fx_ini,SYSTEM_RESET_RECEIVERS,EFFECT_FACTORY_VALUES,
 )
 from event_log import log_text
-from i18n import tr, active_locale
+from i18n import active_locale, dialog_action, tr
 from product import ENV_UI_ONLY, MIDI_PORT_NAME, PRODUCT_NAME, PRODUCT_VERSION
 from soundfont_files import DEFAULT_SCAN_BUDGET, ScanResult, scan_soundfonts
 
@@ -108,7 +108,7 @@ from native_widgets import (
     AnimatedComboBox, DeviceComboBox, ElasticLabel, ElasticPanel,
       InstrumentTableSpec, NativeActionButton, NativeSettingsButton, NativeInfoButton, NativeAudioVisualizer, NativeMessageBox, NativeMenu,
     NativeCard, NativeChannelStrip, NativeChannelCommandPresentation, NativeSnapshotCommandPresentation, NativeControlRow, NativeDisclosure, NativeEQResponse, NativeHoverReconciler, NativeKnob, NativeKnobField, NativeLoadBar, NativeMeter, NativeMidiActivityBar, NativeMonitorTransitionFrame, NativeNumberBox, NativePointerFocusDismissal, NativeRotatedLabel, NativeWindowSizeMotion,
-    NativeSegmentedChoice, NativeSlider, NativeToggleSwitch, NativeWindowInteractionFilter, EditableNumberLabel, OutlineCheckBox, SoundFontComboBox,
+    NativeRadioChoice, NativeSegmentedChoice, NativeSlider, NativeToggleSwitch, NativeWindowInteractionFilter, EditableNumberLabel, OutlineCheckBox, SoundFontComboBox,
     SoundFontDiscoverySignals,
     SOUNDFONT_ROW_CURRENT, SOUNDFONT_ROW_FILE,
     SOUNDFONT_ROW_KIND_ROLE, SOUNDFONT_ROW_PICKER, SOUNDFONT_ROW_UNSAVED,
@@ -121,7 +121,7 @@ from native_widgets import (
 from midi_input_runtime import (tuning_hz, tuning_cents, EXPRESSION_EVENTS, CHANNEL_PARAMETERS,
     CHANNEL_FUNCTION_TARGETS, CHANNEL_MIX_RANGES, CHANNEL_MODE_SWITCHES, AUXILIARY_CC)
 from native_dialogs import (
-    NativeAudioFXPanel,
+    NativeAudioFXPanel, midi_form_row,
     NativeActivityCellDelegate, NativeEnginePreferencesDialog, NativeRecordingSaveWorker, NativeInstrumentHeader, NativeMidiPlayerDialog, NativeRecordingDialog, NativeLicensesDialog,
     NativeInstrumentRowDelegate, NativeInstrumentTable, NativeLiveSoundFontGroupDialog,
     NativeSoundFontLoadDialog, NativeSoundFontLoadWorker, NativePerformanceDialog, choose_group_save_path,
@@ -297,6 +297,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         # it establishes its own theme field.
         self._dark = True
         self._color_theme = "blue"
+        self._color_theme_persistence_baseline = None
         QMainWindow.__init__(self)
         from native_layout import NativeWindowPlacement
         self._window_placement = NativeWindowPlacement(self._stored_ui_values.get(NativeWindowPlacement.KEY, ''))
@@ -440,9 +441,9 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             if "delay_type" in values:
                 try:
                     index = int(values["delay_type"])
-                    if 0 <= index < self.delay_type.count():
-                        self.delay_type.setCurrentIndex(index)
-                    self._settings_read_report.record('UI','delay_type','accepted' if 0<=index<self.delay_type.count() else 'invalid')
+                    if 0 <= index < len(self.delay_type.buttons):
+                        self.delay_type.setValue(index)
+                    self._settings_read_report.record('UI','delay_type','accepted' if 0<=index<len(self.delay_type.buttons) else 'invalid')
                 except ValueError:
                     self._settings_read_report.record('UI','delay_type','invalid')
                     pass
@@ -475,7 +476,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
                 combo=getattr(self,attr)
                 if combo.currentText()!='Default':continue
                 expected=EFFECT_FACTORY_VALUES[group]
-                if any((self.delay_type.currentIndex() if key=='delay_type' else getattr(self,key).get())!=value for key,value in expected.items()):
+                if any((self.delay_type.value() if key=='delay_type' else getattr(self,key).get())!=value for key,value in expected.items()):
                     combo.setCurrentText('Custom')
             for field,key,inverted,_mode in SYSTEM_RESET_RECEIVERS:
                 if values.get(key) in ('0','1'):
@@ -513,13 +514,14 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         values = {
             self._window_placement.KEY: self._window_placement.serialized(self),
             "dark": "1" if self._dark else "0",
-            "color_theme": self._color_theme,
+            "color_theme": (self._color_theme_persistence_baseline
+                            if self._color_theme_persistence_baseline is not None else self._color_theme),
             "soundfont": stored_soundfont_selection_path(self._persisted_soundfont_path),
             "output_device": self.device_combo.itemText(confirmed_output),
             "skip_wasapi_warning": "1" if self._skip_wasapi_warning else "0",
             "skip_driver_setup_notice":str(int(self._skip_driver_setup_notice)),
             "volume": str(self.volume.value()),
-            "delay_type": str(self.delay_type.currentIndex()),
+            "delay_type": str(self.delay_type.value()),
         }
         # The pre-show placeholder is not an applied output. First-paint
         # autosave must not replace a stored identity before device startup.
@@ -563,8 +565,9 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             getattr(self, name).slider.valueChanged.connect(self._queue_ui_save)
         for name, _key, _inverted in self._PERSISTED_FLAGS:
             getattr(self, name).toggled.connect(self._queue_ui_save)
-        for name in (*self._PERSISTED_COMBOS, "delay_type", "spatial_sample_rate"):
+        for name in (*self._PERSISTED_COMBOS, "spatial_sample_rate"):
             getattr(self, name).currentIndexChanged.connect(self._queue_ui_save)
+        self.delay_type.valueChanged.connect(self._queue_ui_save)
         self.volume.valueChanged.connect(self._queue_ui_save)
 
     def _queue_ui_save(self, *_args) -> None:
@@ -640,7 +643,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
                     self.delay_preset.blockSignals(blocked)
                 elif field == "delay_type":
                     blocked = self.delay_type.blockSignals(True)
-                    self.delay_type.setCurrentIndex(value)
+                    self.delay_type.setValue(value)
                     self.delay_type.blockSignals(blocked)
                 else:
                     getattr(self, field).set(value, False)
@@ -1627,7 +1630,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
     def _read_delay_state(self):
         delay_sysex = getattr(self, "delay_sysex_enabled", None)
         return delay_state_from_controls({key:getattr(self,key).get() for key in
-            ('delay_level','delay_time','delay_feedback')},self.delay_type.currentIndex(),
+            ('delay_level','delay_time','delay_feedback')},self.delay_type.value(),
             delay_sysex.isChecked() if delay_sysex is not None else False)
 
     def _read_extended_delay_state(self):
@@ -1696,7 +1699,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             {name:getattr(self,name).get() for name in EFFECT_CAPTURE_CONTROLS},
             master_volume=self.volume.value(),
             reverb_preset=self.reverb_preset.currentText(),chorus_preset=self.chorus_preset.currentText(),
-            delay_type=self.delay_type.currentIndex(),delay_sysex=self.delay_sysex_enabled.isChecked(),
+            delay_type=self.delay_type.value(),delay_sysex=self.delay_sysex_enabled.isChecked(),
             extra_delay_ping_pong=self.extra_delay_ping_pong.isChecked(),
             audio_fx=self.audio_fx_panel.applied_slots(),
             audio_fx_enabled=self.audio_fx_panel.applied_enabled(),
@@ -1882,7 +1885,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             return self._read_equalizer_state().ini_values()
         snapshot = {row.attr: str(getattr(self, row.attr).get()) for row in EFFECT_ROWS[group]}
         if group == "delay":
-            snapshot["delay_type"] = str(self.delay_type.currentIndex())
+            snapshot["delay_type"] = str(self.delay_type.value())
         return snapshot
 
     def _remember_custom_preset(self, group):
@@ -1910,7 +1913,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
                             self._settings_read_report.record('UI','custom_'+row.attr,'invalid')
                     if group == "delay" and 'delay_type' in stored:
                         try:
-                            if not 0<=int(stored['delay_type'])<self.delay_type.count(): raise ValueError()
+                            if not 0<=int(stored['delay_type'])<len(self.delay_type.buttons): raise ValueError()
                             snapshot['delay_type']=stored['delay_type']
                         except (TypeError,ValueError): self._settings_read_report.record('UI','custom_delay_type','invalid')
             except (KeyError, TypeError, ValueError):
@@ -1938,7 +1941,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
                     getattr(self, row.attr).set(float(snapshot[row.attr]), False)
                 if group == "delay":
                     blocked = self.delay_type.blockSignals(True)
-                    self.delay_type.setCurrentIndex(int(snapshot["delay_type"]))
+                    self.delay_type.setValue(int(snapshot["delay_type"]))
                     self.delay_type.blockSignals(blocked)
             if group == "equalizer":
                 self._apply_equalizer()
@@ -2071,6 +2074,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
         QMainWindow.showEvent(self, event)
         if self._shutdown_started:
             return
+        self._sync_always_on_top()
         first_show = not self._first_show_complete
         self._first_show_complete = True
         if not self._soundfont_scan_started:
@@ -3021,9 +3025,19 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             return f"+{offset}" if offset > 0 else f"−{-offset}" if offset < 0 else "0"
         return str(value)
 
+    def apply_midi_port_settings(self, settings):
+        previous=self.midi_input_runtime.port_settings
+        super().apply_midi_port_settings(settings)
+        if self.midi_input_runtime.port_settings!=previous:
+            self._sync_monitor_ports()
+            player=getattr(self,'_midi_player',None)
+            if player is not None:
+                player.refresh_port_names()
+
     def _sync_monitor_ports(self):
         count = ae.runtime.addresses.count // 16
-        names={row['slot']:row['name'] for row in self.midi_input_runtime.port_settings.ports}
+        names={row['slot']:row['name'] for row in self.midi_input_runtime.port_settings.ports
+               if row.get('virtual_port',True)}
         document=getattr(getattr(self,'_midi_player',None),'document',None)
         available=sorted(set(names)|ae.runtime.addresses.used_ports|set(document.ports if document else ()))
         available=[port for port in available if port<count]
@@ -3373,13 +3387,13 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             tuple(BMSYNTH_DELAY_PRESETS), self.apply_delay_preset,
             tooltip_key="delay_preset",trailing=self._effect_preview_cell('delay'),
         )
-        self._add_labeled_combo(
-            layout, tr("common.type"), "delay_type", delay_type_labels(),
-            lambda _name: self._on_delay_type_changed(), tooltip_key="delay_type",
-        )
-        self.delay_type.blockSignals(True)
-        self.delay_type.setCurrentIndex(EFFECT_FACTORY_VALUES['delay']['delay_type'])
-        self.delay_type.blockSignals(False)
+        self.delay_type = NativeRadioChoice(tuple(enumerate(delay_type_labels())))
+        self.delay_type.setValue(EFFECT_FACTORY_VALUES['delay']['delay_type'])
+        row = midi_form_row(tr("common.type"), self.delay_type)
+        install_effect_tooltip(effect_tooltip("delay_type"), row, row.layout().itemAt(0).widget(),
+                               self.delay_type, *self.delay_type.buttons)
+        self.delay_type.valueChanged.connect(lambda _value: self._on_delay_type_changed())
+        layout.addWidget(row)
         self._add_effect_rows(layout, EFFECT_ROWS["delay"], lambda _row: self._on_delay_slider_change)
         self._add_effect_toggle_row(
             layout,
@@ -3927,7 +3941,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             command_index = -1
             if not only_favorites:
                 command_index = combo.count()
-                combo.addItem(tr("action.change_soundfont"), SOUNDFONT_PICKER_SENTINEL)
+                combo.addItem(dialog_action(tr("action.change_soundfont")), SOUNDFONT_PICKER_SENTINEL)
                 combo.setItemData(command_index, SOUNDFONT_ROW_PICKER, SOUNDFONT_ROW_KIND_ROLE)
                 combo.setItemData(command_index, tr("action.change_soundfont"), Qt.ToolTipRole)
             combo.setCurrentIndex(selected_index if selected_index >= 0 else command_index)
@@ -4084,7 +4098,7 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             if "Preset" in delay:
                 self.delay_preset.setCurrentIndex(min(delay["Preset"] + 1, self.delay_preset.count() - 1)); applied += 1
             if "DelayType" in delay:
-                self.delay_type.setCurrentIndex(min(delay["DelayType"], self.delay_type.count() - 1)); applied += 1
+                self.delay_type.setValue(min(delay["DelayType"], len(self.delay_type.buttons) - 1)); applied += 1
             for key,control in (("Level",self.delay_level),("Time",self.delay_time),("FeedBack",self.delay_feedback)):
                 if key in delay: control.set(delay[key], False); applied += 1
             if "UseDelaySysEx" in delay:
@@ -4736,6 +4750,14 @@ class NativeLiveWindow(QMainWindow, live_controller.LiveController):
             self._tray_icon.hide()
             if not self.isVisible():
                 self.showNormal()
+
+    def _sync_always_on_top(self):
+        from native_widgets import apply_native_window_topmost
+        for window in QApplication.topLevelWidgets():
+            owner=window
+            while owner.parentWidget() is not None:owner=owner.parentWidget()
+            if owner is self and window.windowType() in (Qt.Window,Qt.Dialog):
+                apply_native_window_topmost(window)
 
     def _request_exit(self):
         """Exit explicitly; only the window X may honor close-to-tray."""

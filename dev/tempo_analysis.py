@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import math
 import multiprocessing
+import os
 import queue
 import threading
 import time
@@ -118,6 +119,15 @@ class TempoEstimator:
         return True,float(value) if value is not None and math.isfinite(value) and value>0 else None
 
 def _tempo_worker(inbox,outbox):
+    parent=multiprocessing.parent_process()
+    if parent is not None:
+        def exit_with_parent():
+            # Wait on the exact inherited process sentinel, independent of
+            # queue reads or estimator work. An abruptly lost GUI cannot send
+            # the normal None command or run multiprocessing's daemon cleanup.
+            parent.join()
+            os._exit(0) # Analysis-only process owns no user files/audio handles.
+        threading.Thread(target=exit_with_parent,name='tempo-parent-lifetime',daemon=True).start()
     estimator=None;identity=None;expected=0
     while True:
         message=inbox.get()

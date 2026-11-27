@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from i18n import tr
+from i18n import dialog_action, tr
 from native_layout import bordered_page_layout, control_row_layout, set_layout
 from native_widgets import (
     METRICS, NativeCard, NativeDialog, NativeMessageBox, NativeOptionalLabel, apply_native_text_metrics,
@@ -483,9 +483,14 @@ class ProductUpdateController(QObject):
         prompt.setWindowTitle(tr('support.updates'))
         prompt.setIcon(QMessageBox.Information)
         prompt.setText(tr('support.update_downloading'))
+        total = release.get('artifacts', {}).get(context['mode'], {}).get('size')
+        if type(total) is int and total > 0:
+            prompt.setInformativeText(self._download_progress_text(0, total))
         cancel = prompt.addButton(tr('common.cancel'), QMessageBox.RejectRole)
         prompt.setEscapeButton(cancel)
         self.prompt = prompt
+        self._download_cancelled = False
+        self._download_progress_label = prompt.informativeLabel()
         self.worker = SupportWorker(updates.prepare_update, (release, context), self)
         self.worker.keywords.update(cancelled=self.worker.isInterruptionRequested, progress=self.worker.progress.emit)
         self.worker.progress.connect(self._progress)
@@ -495,15 +500,22 @@ class ProductUpdateController(QObject):
         self.worker.start()
 
     def _cancel_download(self, _result):
-        if self.worker is not None:self.worker.requestInterruption()
+        if self.worker is not None:
+            self._download_cancelled = True
+            self.worker.requestInterruption()
+
+    @staticmethod
+    def _download_progress_text(done, total):
+        return tr('support.update_progress', done=f'{done/1048576:.1f}', total=f'{total/1048576:.1f}')
 
     def _progress(self, done, total):
-        if self.prompt is not None:
-            self.prompt.setInformativeText(tr('support.update_progress', done=f'{done/1048576:.1f}', total=f'{total/1048576:.1f}'))
+        if self._download_progress_label is not None and not self._download_cancelled:
+            self._download_progress_label.setText(self._download_progress_text(done, total))
 
     def _downloaded(self):
         worker, self.worker = self.worker, None
-        cancelled = worker.isInterruptionRequested()
+        cancelled = self._download_cancelled
+        self._download_progress_label = None
         if self.prompt is not None:
             self.prompt.close();self.prompt.deleteLater();self.prompt = None
         if worker.error or cancelled:
@@ -585,7 +597,7 @@ class NativeMaintenancePanel(NativeCard):
         from settings import settings_path
         rows = ((tr('support.settings_folder'), lambda: reveal_support_path(self, settings_path().parent)),
                 (tr('support.logs_folder'), lambda: reveal_support_path(self, settings_path().parent / 'logs')),
-                (tr('support.backup'), self.backup), (tr('support.restore'), self.restore),
+                (dialog_action(tr('support.backup')), self.backup), (dialog_action(tr('support.restore')), self.restore),
                 (tr('support.recovery_start'), self.recovery), (tr('support.cancel_restore'), self.cancel_restore))
         self.buttons = []
         for first in range(0, len(rows), 2):
@@ -709,7 +721,7 @@ class NativeGroupFilesDialog(NativeDialog):
         self.status.setWordWrap(True)
         self.status.setMinimumWidth(0)
         body.addWidget(self.status)
-        self.acknowledge = make_action_button(tr('support.collect_files'), self.collect)
+        self.acknowledge = make_action_button(dialog_action(tr('support.collect_files')), self.collect)
         self.acknowledge.setEnabled(False)
         row = control_row_layout()
         row.addWidget(self.acknowledge)

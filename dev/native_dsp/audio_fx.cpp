@@ -2387,13 +2387,19 @@ struct ChannelFXMidiDescriptor {
 };
 struct ChannelFXMidiRoute {
     unsigned long long reuse=0,serial=0;unsigned parameter=0,cc=0,bytes=0,kind=0;
-    double observed=0;std::array<unsigned char,128> mask{};
+    double observed=0;bool learned=false;std::array<unsigned char,128> mask{};
     std::array<std::array<unsigned char,128>,128> payload{};std::array<double,128> values{};
 };
 struct ChannelFXMidiMap {std::vector<ChannelFXMidiRoute> routes;};
 struct ChannelFXMidiSnapshot {unsigned long long reuse,serial;unsigned parameter,cc;double value;};
 static_assert(sizeof(ChannelFXMidiDescriptor)==48&&sizeof(ChannelFXMidiSnapshot)==32,"channel MIDI FX ABI1");
+struct ChannelFXReset {
+    std::array<FXTopologyValue,32> desired{};
+    unsigned count=0;
+    std::shared_ptr<ChannelFXMidiMap> midi;
+};
 struct FXTopologyGraph {
+    std::shared_ptr<ChannelFXReset> channelReset;
     std::atomic<unsigned> references{1};unsigned stream,count=0,retiredCount=0;bool faulted=false;
     // stream remains the FIFO/root generation. target is only the DSP sink.
     unsigned target=0,midiChannel=UINT_MAX;bool ownsTarget=false;FXTopologyGraph* channelNext=nullptr;
@@ -2455,6 +2461,7 @@ extern "C" __declspec(dllexport) int __cdecl channel_fx_delay_release(unsigned r
 extern "C" __declspec(dllexport) void __cdecl channel_fx_delay_acquire(unsigned root,unsigned channel,unsigned mix){channelFXDelayAcquire(root,channel,mix);}
 struct FXTopologyPlan {
     std::shared_ptr<ChannelFXMidiMap> midi;
+    std::shared_ptr<ChannelFXReset> channelReset;
     std::atomic<unsigned> references{1};
     FXTopologyGraph* graph;unsigned count;std::array<FXTopologyValue,32> desired{};
     explicit FXTopologyPlan(FXTopologyGraph* root,unsigned rows):graph(root),count(rows){graph->retain();}
@@ -2497,7 +2504,7 @@ static int channelFXMidiApply(unsigned root,unsigned channel,unsigned cc,unsigne
     if(!graph.lock(root,TRUE)){AcquireSRWLockExclusive(&graph.midiLock);++graph.midiFailures;ReleaseSRWLockExclusive(&graph.midiLock);target->release();return 0;}
     AcquireSRWLockExclusive(&graph.midiLock);
     if(graph.midi)for(auto& route:graph.midi->routes){
-        if(route.cc==UINT_MAX)route.cc=cc;
+        if(route.cc==UINT_MAX){route.cc=cc;route.learned=true;}
         if(route.cc!=cc)continue;
         bool accepted=true;
         for(unsigned i=0;i<graph.count;++i)if(graph.current[i].reuse==route.reuse){
@@ -2543,6 +2550,17 @@ extern "C" __declspec(dllexport) void* __cdecl fx_topology_plan_create(void* poi
     if(!plan||!fxTopologyCopy(rows,count,plan->desired.data(),false))return nullptr;return plan.release();
 }
 extern "C" __declspec(dllexport) void __cdecl fx_topology_plan_release(void* pointer){if(pointer)static_cast<FXTopologyPlan*>(pointer)->release();}
+extern "C" __declspec(dllexport) int __cdecl channel_fx_reset_prepare(void* pointer,void* defaults){
+    if(!pointer||!defaults)return 0;
+    auto& plan=*static_cast<FXTopologyPlan*>(pointer);auto& seed=*static_cast<FXTopologyPlan*>(defaults);
+    if(plan.graph!=seed.graph||plan.graph->midiChannel==UINT_MAX)return 0;
+    try{
+        auto reset=std::make_shared<ChannelFXReset>();
+        reset->desired=seed.desired;reset->count=seed.count;reset->midi=seed.midi;
+        plan.channelReset=std::move(reset);
+        return 1;
+    }catch(const std::bad_alloc&){return 0;}
+}
 static bool fxTopologyCopy2(const FXTopologyDescriptor2* rows,unsigned count,FXTopologyValue* output,bool seed){
     if(count>32||(count&&!rows))return false;
     for(unsigned i=0;i<count;++i){const auto& row=rows[i];
@@ -2577,7 +2595,8 @@ static FXTopologyOutcome fxTopologyApply(FXTopologyPlan& plan){
     auto& graph=*plan.graph;FXTopologyOutcome result{};
     bool equal=graph.count==plan.count&&!graph.faulted&&!graph.retiredCount;
     for(unsigned i=0;equal&&i<plan.count;++i)equal=graph.current[i].exact==plan.desired[i].exact&&graph.current[i].priority==plan.desired[i].priority;
-    if(equal){if(plan.midi){AcquireSRWLockExclusive(&graph.midiLock);graph.midi=plan.midi;ReleaseSRWLockExclusive(&graph.midiLock);}return result;}
+    if(equal){if(plan.midi){AcquireSRWLockExclusive(&graph.midiLock);graph.midi=plan.midi;ReleaseSRWLockExclusive(&graph.midiLock);}
+        if(plan.channelReset)graph.channelReset=plan.channelReset;return result;}
     if(!graph.lock(graph.stream,TRUE)){result.phase=1;result.error=graph.error();return result;}
     auto finish=[&](){
         if(graph.midiChannel!=UINT_MAX&&!graph.count&&!graph.retiredCount&&graph.target&&graph.ownsTarget){
@@ -2641,6 +2660,7 @@ static FXTopologyOutcome fxTopologyApply(FXTopologyPlan& plan){
     }else{
         for(unsigned i=0;i<plan.count;++i)if(transitioned[i])fx_kernel_transition_commit(next[i].pointer,plan.desired[i].pointer);
         graph.current=next;graph.count=plan.count;graph.faulted=false;result.changed=1;
+        if(plan.channelReset)graph.channelReset=plan.channelReset;
         if(plan.midi){AcquireSRWLockExclusive(&graph.midiLock);graph.midi=plan.midi;ReleaseSRWLockExclusive(&graph.midiLock);}
     }
     return finish();
@@ -6921,7 +6941,9 @@ extern "C" __declspec(dllexport) int __cdecl midi_cc_kernel_file_reset_prepare(v
     }catch(const std::bad_alloc&){ReleaseSRWLockExclusive(&s.lock);return 0;}
     ReleaseSRWLockExclusive(&s.lock);return 1;
 }
-static int midiCCFileResetContinue(MidiCCKernel& s,unsigned stream,void* timing){
+static int midiCCFileResetContinue(MidiCCKernel& s,unsigned stream,void* timing,unsigned inputPort=UINT_MAX){
+    const bool portOnly=inputPort!=UINT_MAX;
+    const unsigned channelCount=portOnly?16u:s.gmChannels;
     {MidiCCJournalLease lease(s);const int remaining=midiCCSemanticContinue(s,stream);
         if(remaining!=1){if(remaining==-2){lease.retain=true;s.pendingClockLease=true;}return remaining;}}
     s.pendingGMSemantic=false;auto& selection=*s.selection;auto& state=*s.semantics;
@@ -6937,13 +6959,18 @@ static int midiCCFileResetContinue(MidiCCKernel& s,unsigned stream,void* timing)
         auto event=[&](unsigned channel,unsigned kind,unsigned raw){const bool accepted=emit(stream,channel,kind,raw)!=FALSE;const int code=accepted?0:error();
             if(kind==MIDI_EVENT_RESET)midiCCObserveResetResult(s,stream,kind,channel,raw,accepted,code);
             selection.write(channel,kind,raw,s.gmPhase==1?30u:s.fileResetSource,accepted?1u:0u,code);return accepted;};
-        const unsigned channel=s.gmChannel<s.gmSelection.size()?s.gmSelection[s.gmChannel]:0;
+        const unsigned channel=portOnly?inputPort*16+s.gmChannel:
+            s.gmChannel<s.gmSelection.size()?s.gmSelection[s.gmChannel]:0;
         if(s.gmPhase==0){
             if(timing){auto lock=reinterpret_cast<BOOL(WINAPI*)(DWORD,BOOL)>(s.lockAddress);if(!lock(stream,TRUE))return fatal();
                 playback_timing_reset(timing);if(!lock(stream,FALSE)){s.pendingStream=stream;s.pendingThread=GetCurrentThreadId();s.gmPhase=1;release();return -2;}}
             s.gmPhase=1;s.gmChannel=0;s.fileResetSubphase=0;
         }else if(s.gmPhase==1){
             if(s.fileResetSubphase==0){
+                if(portOnly){
+                    if(!s.notes->humanization.cancel(stream,channel)){release();return -6;}
+                    if(timing)for(unsigned key=0;key<128;++key){auto& q=static_cast<PlaybackTiming*>(timing)->ingress[channel*128+key];q.head.store(q.tail.load());}
+                }
                 // clear_origins(channel) precedes the first direct audio call.
                 s.journal->receive(stream,s.fileOriginClearSlot,channel<<16);s.fileResetSubphase=1;
             }else if(s.fileResetSubphase==1){
@@ -6995,7 +7022,7 @@ static int midiCCFileResetContinue(MidiCCKernel& s,unsigned stream,void* timing)
                 s.fileResetSubphase=11;
             }else{
                 const auto first=state.resetFirst[channel],count=state.resetCount[channel];
-                if(++s.gmChannel==s.gmChannels){s.gmPhase=2;s.gmChannel=0;}s.fileResetSubphase=0;
+                if(++s.gmChannel==channelCount){s.gmPhase=portOnly?7u:2u;s.gmChannel=0;}s.fileResetSubphase=0;
                 const int applied=count?midiCCSemanticApply(s,stream,channel,0,first,first+count,nullptr,true):1;
                 if(applied!=1){s.pendingGMSemantic=true;release();return applied;}
             }
@@ -7029,17 +7056,22 @@ static int midiCCFileResetContinue(MidiCCKernel& s,unsigned stream,void* timing)
         release();
     }return 1;
 }
-extern "C" __declspec(dllexport) int __cdecl midi_cc_kernel_file_reset_run(void* pointer,unsigned stream,void* timing,unsigned source){
+static int midiCCFileResetRun(void* pointer,unsigned stream,void* timing,unsigned source,unsigned inputPort){
     if(!pointer||!stream||(source!=29&&source!=31))return -1;auto& s=*static_cast<MidiCCKernel*>(pointer);AcquireSRWLockExclusive(&s.lock);
+    if(inputPort!=UINT_MAX&&(inputPort>=8||inputPort*16+16>s.gmChannels)){ReleaseSRWLockExclusive(&s.lock);return -3;}
     if(!s.fileResetReady||s.cancelledStream||s.pendingStream||(s.executionOwner&&s.executionThread.load()!=GetCurrentThreadId())){ReleaseSRWLockExclusive(&s.lock);return -3;}
     if(s.gmFatal){const int result=s.gmFatal;ReleaseSRWLockExclusive(&s.lock);return result;}
     if(s.gmActive&&(s.gmKind!=2||s.gmStream!=stream||s.fileResetSource!=source)){ReleaseSRWLockExclusive(&s.lock);return -1;}
-    MidiNoteLease notes(s.notes);MidiActivityLease activity(s.notes,nullptr,0,0,(!s.gmActive||s.gmPhase<=1)?s.gmChannels:0u,&s.pendingStream);
+    MidiNoteLease notes(s.notes);MidiActivityLease activity(s.notes,nullptr,0,0,(!s.gmActive||s.gmPhase<=1)?(inputPort==UINT_MAX?s.gmChannels:16u):0u,&s.pendingStream);
     if(!activity.ready){ReleaseSRWLockExclusive(&s.lock);return -4;}
     if(!s.gmActive){const auto ready=midiCCReserveFailures(s,midiCCResetFailureBudget(s)*2);if(ready!=1){ReleaseSRWLockExclusive(&s.lock);return ready;}
-        s.gmActive=true;s.gmKind=2;s.fileResetSource=source;s.gmStream=stream;s.gmPhase=s.gmChannel=s.fileResetSubphase=0;}
-    const int result=midiCCFileResetContinue(s,stream,timing);if((result==1&&!s.gmActive)||result==-8)s.releaseFailureCredit();
+        s.gmActive=true;s.gmKind=2;s.fileResetSource=source;s.gmStream=stream;
+        s.gmPhase=inputPort==UINT_MAX?0u:1u;s.gmChannel=s.fileResetSubphase=0;}
+    const int result=midiCCFileResetContinue(s,stream,timing,inputPort);if((result==1&&!s.gmActive)||result==-8)s.releaseFailureCredit();
     ReleaseSRWLockExclusive(&s.lock);return result;
+}
+extern "C" __declspec(dllexport) int __cdecl midi_cc_kernel_file_reset_run(void* pointer,unsigned stream,void* timing,unsigned source){
+    return midiCCFileResetRun(pointer,stream,timing,source,UINT_MAX);
 }
 extern "C" __declspec(dllexport) int __cdecl midi_cc_kernel_file_reset_pending(void* pointer,unsigned stream){
     if(!pointer||!stream)return 0;auto& s=*static_cast<MidiCCKernel*>(pointer);AcquireSRWLockShared(&s.lock);
@@ -8040,9 +8072,10 @@ extern "C" __declspec(dllexport) void __cdecl midi_execution_origin_release(void
 // command FIFO/live publication admission is still a separate required gate.
 // Original notes use a bounded FIFO, NEVER observational coalescing. Filled
 // output storage backpressures execution and then ingress, never drops events.
-static void midiRouteOutput(void*,unsigned,const unsigned char*,unsigned);
+static void midiRouteOutput(void*,unsigned,const unsigned char*,unsigned,bool external=false);
 static void midiRouteSemantic(void*,unsigned,unsigned);
 struct MidiExecutionWorker {
+    std::atomic<unsigned> winmmInputMask{255};
     int settleFailedSelection(){
         AcquireSRWLockExclusive(&kernel->lock);auto* state=kernel->selection;auto reader=kernel->selectionQueueReader;
         if(!state||!reader||kernel->compatibilityCallback){ReleaseSRWLockExclusive(&kernel->lock);return 0;}
@@ -8316,6 +8349,126 @@ struct MidiExecutionWorker {
     unsigned traceHead=0,traceCount=0;
     unsigned long long traceProduced=0,traceDropped=0,traceRead=0;
     MidiExecutionIdle idle;
+    std::atomic<unsigned> nwcResetMode{0};
+    // Only possible NWC reset messages wait here. Independent ports keep
+    // their own delivery order and can play while a candidate is incomplete.
+    static constexpr unsigned nwcChannelMessages=134,nwcMessages=16*nwcChannelMessages;
+    struct NwcFrame {
+        std::array<unsigned long long,13> descriptor{};
+        std::array<unsigned long long,9> origin{};
+        unsigned long long client=0,publication=0;
+        unsigned slot=0,offset=0;
+    };
+    struct NwcBatch {
+        std::vector<NwcFrame> frames;
+        std::array<unsigned char,nwcMessages*3> bytes{};
+        unsigned messages=0,replay=0,action=0;
+        bool ready=false;
+        unsigned long long deadline=0;
+        void release(unsigned mode=0){action=mode;ready=true;}
+        void clear(){frames.clear();messages=replay=action=0;ready=false;deadline=0;}
+    };
+    std::array<NwcBatch,8> nwcBatches;
+    bool nwcFrame=false,nwcReplayed=false;
+    unsigned nwcFinalAction=0;
+    std::array<unsigned long long,9> ingressOrigin{};
+
+    unsigned matchNwcFrame(const NwcBatch& batch,const MidiPipeQueue::Frame& frame,
+            unsigned long long client,unsigned action,unsigned targetPort){
+        if(!action||targetPort*16+16>kernel->gmChannels||!kernel->notes||
+           kernel->compatibilityCallback||(action==2&&!kernel->fileResetReady)||frame.kind!=3||
+           (client==UINT64_MAX&&(frame.origin[7]&~7ull)!=0x100)||
+           !frame.origin[2]||!frame.origin[3]||!frame.origin[6]||!frame.size||frame.size%3||
+           frame.size>3*(nwcMessages-batch.messages))return 0;
+        if(!batch.frames.empty()){
+            const auto& previous=batch.frames.back();
+            const auto previousSequence=previous.descriptor[8];
+            // WinMM sequences belong to the sender process and can advance
+            // on another port. Exact bytes still prove completeness here.
+            // Callback MIDI has a separate sequence for each endpoint.
+            const bool sequenceValid=frame.origin[3]>previousSequence&&
+                (client!=UINT64_MAX||frame.origin[3]-previousSequence==1);
+            if(action!=batch.action||client!=previous.client||frame.read<previous.descriptor[4]||
+               frame.read>batch.deadline||frame.origin[2]!=previous.descriptor[7]||
+               !sequenceValid||frame.origin[5]!=previous.descriptor[10]||
+               frame.origin[6]!=previous.descriptor[11]||frame.origin[7]!=previous.descriptor[12])return 0;
+        }
+        constexpr unsigned char settings[6][3]{{0xb0,1,0},{0xb0,7,127},{0xb0,64,0},{0xb0,10,64},{0xb0,11,127},{0xe0,0,64}};
+        for(unsigned offset=0;offset<frame.size;offset+=3){
+            const unsigned message=batch.messages+offset/3;
+            const unsigned channel=message/nwcChannelMessages,index=message%nwcChannelMessages;
+            const unsigned char off[]{0x80,static_cast<unsigned char>(index-6),0};
+            const auto* expected=index<6?settings[index]:off;
+            if(input[offset]!=(expected[0]|channel)||input[offset+1]!=expected[1]||input[offset+2]!=expected[2])return 0;
+        }
+        return batch.messages+frame.size/3;
+    }
+    bool appendNwcFrame(NwcBatch& batch,unsigned matched,unsigned action,const unsigned long long* descriptor){
+        try{if(batch.frames.empty())batch.frames.reserve(nwcMessages);}
+        catch(const std::bad_alloc&){return false;}
+        auto& row=batch.frames.emplace_back();
+        std::copy_n(descriptor,row.descriptor.size(),row.descriptor.begin());
+        row.origin=ingressOrigin;row.client=inputClient.load();row.publication=inputPublication;row.slot=inputSlot;row.offset=batch.messages*3;
+        std::copy_n(input.begin(),static_cast<unsigned>(descriptor[1]),batch.bytes.begin()+row.offset);
+        ingress->clients[inputSlot].metadata.fetch_add(1);
+        inputClient.store(0);
+        batch.messages=matched;batch.action=action;
+        if(matched==nwcMessages)batch.release(action);
+        else{
+            const auto first=batch.frames.front().descriptor[4];
+            const auto maxGap=idle.frequency*(matched<=6?2u:12u)/1000;
+            batch.deadline=std::min(first+idle.frequency*300/1000,descriptor[4]+maxGap);
+        }
+        return true;
+    }
+    bool releaseNwcFrames(unsigned long long through=UINT64_MAX){
+        bool ready=false;
+        for(auto& batch:nwcBatches)if(!batch.frames.empty()){
+            if(!batch.ready&&batch.deadline<=through)batch.release();
+            ready=ready||batch.ready;
+        }
+        return ready;
+    }
+    DWORD nwcInputWait(){
+        auto deadline=UINT64_MAX;
+        for(const auto& batch:nwcBatches)if(!batch.frames.empty()&&!batch.ready)deadline=std::min(deadline,batch.deadline);
+        if(deadline==UINT64_MAX)return INFINITE;
+        LARGE_INTEGER now{};QueryPerformanceCounter(&now);
+        const auto tick=static_cast<unsigned long long>(now.QuadPart);
+        if(tick>=deadline)return 0;
+        return static_cast<DWORD>(std::max<unsigned long long>(1,((deadline-tick)*1000+idle.frequency-1)/idle.frequency));
+    }
+    bool takeNwcFrame(unsigned long long* descriptor){
+        unsigned next=8;unsigned long long ticket=UINT64_MAX;
+        for(unsigned i=0;i<nwcBatches.size();++i){
+            const auto& batch=nwcBatches[i];
+            if(batch.ready&&batch.frames[batch.replay].publication<ticket){
+                next=i;ticket=batch.frames[batch.replay].publication;
+            }
+        }
+        if(next==8)return false;
+        auto& batch=nwcBatches[next];const auto& row=batch.frames[batch.replay++];
+        std::copy(row.descriptor.begin(),row.descriptor.end(),descriptor);
+        std::copy_n(batch.bytes.begin()+row.offset,static_cast<unsigned>(descriptor[1]),input.begin());
+        ingressOrigin=row.origin;inputSlot=row.slot;inputPublication=row.publication;port=next;
+        inputClient.store(row.client);
+        ingress->clients[row.slot].metadata.fetch_sub(1);
+        nwcReplayed=true;nwcFrame=batch.action!=0;
+        if(batch.replay==batch.frames.size()){nwcFinalAction=batch.action;batch.clear();}
+        return true;
+    }
+    void cancelNwcFrames(){
+        if(!ingress)return;
+        releaseNwcFrames();
+        unsigned long long descriptor[13]{};
+        while(takeNwcFrame(descriptor)){
+            std::array<unsigned long long,32> result{};
+            result[1]=9;result[2]=static_cast<unsigned long long>(-9ll);result[3]=descriptor[0];result[4]=descriptor[1];
+            result[5]=descriptor[4];std::copy_n(descriptor+5,8,result.data()+6);
+            LARGE_INTEGER now{};QueryPerformanceCounter(&now);result[31]=now.QuadPart;
+            publish(result,0);inputClient.store(0);
+        }
+    }
     bool paused=false,delivered=false;
     unsigned resume=0,pendingKind=0,head=0,count=0,noteHead=0,noteTail=0,noteUsed=0;
     unsigned long long serial=0,pendingTicket=0;
@@ -8418,8 +8571,10 @@ struct MidiExecutionWorker {
     }
     int pop(unsigned long long* descriptor){
         idle.changed.store(false,std::memory_order_release);
+        nwcFrame=nwcReplayed=false;nwcFinalAction=0;
         if(!ingress)return midiQueuePop(queue,input.data(),inputCapacity,descriptor,1,this,&stopping,&controlsPending,&controlFence,presentationWait(),&idle.changed);
         for(;;){
+            if(takeNwcFrame(descriptor))return 1;
             AcquireSRWLockExclusive(&ingress->lock);
             if(stopping.load()){ReleaseSRWLockExclusive(&ingress->lock);return 0;}
             fileAdmit();
@@ -8435,14 +8590,53 @@ struct MidiExecutionWorker {
                 const auto& frame=q->frames[q->head];const unsigned first=std::min(frame.size,MidiPipeQueue::byteCapacity-q->byteHead);
                 std::memcpy(input.data(),q->storage.data()+q->byteHead,first);
                 if(first<frame.size)std::memcpy(input.data()+first,q->storage.data(),frame.size-first);
+                unsigned framePort=winner==8?frame.directPort:client.port;
+                if(frame.kind==3&&(frame.origin[7]&~7ull)==0x80000000ull)framePort=static_cast<unsigned>(frame.origin[7]&7);
+                const bool enabled=winner==8||(winmmInputMask.load()&(1u<<framePort));
+                auto& batch=nwcBatches[framePort];
+                const auto action=nwcResetMode.load(std::memory_order_acquire);
+                // System reset/SysEx can change more than their ingress
+                // port. Realtime clock and normal packets from other ports
+                // can proceed without invalidating a pending NWC batch.
+                const auto end=input.begin()+frame.size;
+                const bool systemBoundary=enabled&&frame.size&&
+                    (input[0]==0xf0||input[0]==0xff||(frame.size>3&&std::find(input.begin(),end,0xf0)!=end));
+                if(releaseNwcFrames(frame.read)){
+                    ReleaseSRWLockExclusive(&q->lock);ReleaseSRWLockExclusive(&ingress->lock);
+                    continue;
+                }
+                const auto matched=enabled?matchNwcFrame(batch,frame,client.id,action,framePort):0;
+                if(!matched&&!batch.frames.empty()){
+                    batch.release();
+                    ReleaseSRWLockExclusive(&q->lock);ReleaseSRWLockExclusive(&ingress->lock);
+                    continue;
+                }
+                if(systemBoundary&&releaseNwcFrames()){
+                    ReleaseSRWLockExclusive(&q->lock);ReleaseSRWLockExclusive(&ingress->lock);
+                    continue;
+                }
                 descriptor[0]=frame.kind;descriptor[1]=frame.size;descriptor[2]=0;descriptor[3]=static_cast<unsigned long long>(frame.trace);
                 descriptor[4]=frame.read;std::copy_n(frame.origin,8,descriptor+5);
                 LARGE_INTEGER now{};QueryPerformanceCounter(&now);q->maxAge=std::max(q->maxAge,static_cast<unsigned long long>(now.QuadPart)-frame.read);
-                inputClient.store(client.id);inputSlot=winner;inputPublication=frame.publication;port=winner==8?frame.directPort:client.port;
-                if(frame.kind==3&&(frame.origin[7]&~7ull)==0x80000000ull)port=static_cast<unsigned>(frame.origin[7]&7);
+                inputClient.store(client.id);inputSlot=winner;inputPublication=frame.publication;port=framePort;
                 ingress->popped=frame.publication;q->used-=frame.size;q->byteHead=(q->byteHead+frame.size)%MidiPipeQueue::byteCapacity;
                 q->head=(q->head+1)%MidiPipeQueue::frameCapacity;--q->count;++q->popped;++q->batches;WakeAllConditionVariable(&q->changed);
-                ReleaseSRWLockExclusive(&q->lock);ReleaseSRWLockExclusive(&ingress->lock);return 1;
+                if(enabled)origins->prepare(descriptor,ingressOrigin.data(),ingressOrigin[7],ingressOrigin[8]);
+                const bool held=matched&&appendNwcFrame(batch,matched,action,descriptor);
+                ReleaseSRWLockExclusive(&q->lock);ReleaseSRWLockExclusive(&ingress->lock);
+                if(held){
+                    midiRouteOutput(this,port,input.data(),static_cast<unsigned>(descriptor[1]),(descriptor[12]&~7ull)==0x100);
+                    if(recordingAttached.load(std::memory_order_acquire)){
+                        AcquireSRWLockShared(&lock);
+                        if(recording){
+                            if(ingressOrigin[7]||ingressOrigin[8])recording->transportLoss(ingressOrigin[7]+ingressOrigin[8]);
+                            recording->append(0,ingressOrigin[0],port,input.data(),static_cast<unsigned>(descriptor[1]));
+                        }
+                        ReleaseSRWLockShared(&lock);
+                    }
+                }
+                if(enabled&&!held)return 1;
+                continue;
             }
             ReleaseSRWLockExclusive(&ingress->lock);
             if(idle.changed.load(std::memory_order_acquire))return -9;
@@ -8455,8 +8649,13 @@ struct MidiExecutionWorker {
             {AcquireSRWLockShared(&kernel->lock);auto* selected=kernel->selection;
                 selectionPending=selected&&(selected->queuedReservation.load()||selected->failedTicket());
                 ReleaseSRWLockShared(&kernel->lock);}
-            const DWORD wait=std::min(presentationWait(),fileWait());
+            const DWORD candidateWait=nwcInputWait();
+            const DWORD wait=std::min(std::min(presentationWait(),fileWait()),candidateWait);
             const DWORD result=WaitForSingleObject(ingress->ready,selectionPending?std::min(wait,20ul):wait);
+            if(result==WAIT_TIMEOUT&&wait==candidateWait&&candidateWait!=INFINITE){
+                LARGE_INTEGER now{};QueryPerformanceCounter(&now);
+                releaseNwcFrames(static_cast<unsigned long long>(now.QuadPart));continue;
+            }
             if(result==WAIT_TIMEOUT&&selectionPending)return -4;
             if(result==WAIT_TIMEOUT)return -9;
             if(result!=WAIT_OBJECT_0)return -5;
@@ -8524,7 +8723,7 @@ struct MidiExecutionWorker {
     }
     void publish(std::array<unsigned long long,32>& values,unsigned noteCount,const unsigned char* controlData=nullptr,unsigned actionOffset=0){
         const unsigned notesBytes=noteCount*sizeof(MidiNoteAction);
-        const unsigned payloadBytes=values[1]==2||values[1]==3||values[1]==4||values[1]==5||values[1]==12||values[1]==13?static_cast<unsigned>(values[4]):0;
+        const unsigned payloadBytes=values[1]==2||values[1]==3||values[1]==4||values[1]==5||values[1]==12||values[1]==13||values[1]==16?static_cast<unsigned>(values[4]):0;
         const unsigned bytes=notesBytes+payloadBytes;
         AcquireSRWLockExclusive(&lock);
         // Stop is not permission to discard already accepted Note metadata.
@@ -8538,7 +8737,7 @@ struct MidiExecutionWorker {
         // Do not require an audio kernel merely to preserve/inspect records.
         record.activityApplied=kernel&&kernel->notes&&kernel->notes->activity&&!kernel->notes->activityDirty&&
             (noteCount||((values[1]==1||values[1]==4||values[1]==15)&&kernel->notes->activityClears!=activityClearBaseline));
-        record.client=values[1]==4||values[1]==5||values[1]==11?0:inputClient.load();record.publication=record.client?inputPublication:0;record.clientSlot=inputSlot;
+        record.client=values[1]==4||values[1]==5||values[1]==11||values[1]==16?0:inputClient.load();record.publication=record.client?inputPublication:0;record.clientSlot=inputSlot;
         if(ingress&&record.client)ingress->clients[inputSlot].metadata.fetch_add(1);
         auto copy=[&](const unsigned char* source,unsigned size){
             const unsigned first=std::min(size,noteCapacity-noteTail);std::memcpy(noteStorage.data()+noteTail,source,first);
@@ -8622,7 +8821,8 @@ struct MidiExecutionWorker {
     std::unique_ptr<Control> takeControl(bool cancel=false){
         AcquireSRWLockExclusive(acceptanceLock());
         std::unique_ptr<Control> result;
-        if(controlCount&&(cancel||poppedFence()>=controls[controlHead]->fence)){
+        if(controlCount&&(cancel||poppedFence()>=controls[controlHead]->fence)&&
+           (cancel||!releaseNwcFrames())){
             result=std::move(controls[controlHead]);controlHead=(controlHead+1)%static_cast<unsigned>(controls.size());--controlCount;
             if(controlCount)controlFence.store(controls[controlHead]->fence);
             controlsPending.store(controlCount!=0);
@@ -9087,10 +9287,13 @@ struct MidiExecutionWorker {
             if(!cancelled&&(kernel->semantics!=command.generation||!kernel->manualJournal)){cancelled=true;phase=6;}
         }
         unsigned releaseChannels=0;
-        if(command.transportRelease||command.mixerMask){
+        if(command.transportRelease||command.mixerMask||command.manualPanic){
             // Source/address handoff refreshes this existing original Reset
             // address contract at the same actor fence. Read execution-time
-            // scope, not the scope that existed when Play was pressed.
+            // scope, not the scope that existed when Play/Panic was pressed.
+            // kernel->channels is storage capacity (128), not the number of
+            // channels allocated in the BASS stream. StreamEvent rejects an
+            // unallocated channel with BASS_ERROR_ILLPARAM (20).
             AcquireSRWLockShared(&kernel->lock);
             if(kernel->gmReady&&kernel->gmChannels<=kernel->channels){
                 releaseChannels=kernel->gmChannels;
@@ -9126,7 +9329,7 @@ struct MidiExecutionWorker {
                 if(command.mixerMask)kernel->notes->mixerMuted=command.mixerMuted;
                 for(const auto& step:command.steps){
                     if(command.mixerMask&&previousMutes[step.channel])continue;
-                    if((command.transportRelease||command.mixerMask)&&step.channel>=releaseChannels)continue;
+                    if((command.transportRelease||command.mixerMask||command.manualPanic)&&step.channel>=releaseChannels)continue;
                     unsigned parameter=step.param,request=0;
                     if(command.sendFloor){
                         const unsigned shift=step.event==MIDI_EVENT_REVERB?0:7;
@@ -9292,6 +9495,83 @@ struct MidiExecutionWorker {
         }
         ReleaseSRWLockExclusive(acceptanceLock());
     }
+    unsigned resetNwcEffects(){
+        unsigned failure=0;
+        for(unsigned channel=port*16;channel<port*16+16;++channel){
+            FXTopologyGraph* graph=nullptr;
+            AcquireSRWLockShared(&channelFXRegistryLock);
+            for(auto* row=channelFXRegistry;row;row=row->channelNext)
+                if(row->stream==stream&&row->midiChannel==channel){graph=row;graph->retain();break;}
+            ReleaseSRWLockShared(&channelFXRegistryLock);
+            if(!graph)continue;
+            const auto reset=graph->channelReset;
+            if(!reset){graph->release();continue;}
+            FXTopologyPlan plan(graph,reset->count);plan.desired=reset->desired;
+            graph->release();
+            struct ResolvedBinding {unsigned long long reuse;unsigned parameter,cc;};
+            struct ResetReceipt {std::array<FXTopologySnapshot2,64> topology;std::array<ResolvedBinding,256> bindings;};
+            ResetReceipt receipt{};
+            unsigned bindingCount=0;
+            if(reset->midi)try{
+                plan.midi=std::make_shared<ChannelFXMidiMap>(*reset->midi);
+                // A Learn accepted before Reset is already a binding.
+                if(graph->midi)for(const auto& current:graph->midi->routes){
+                    if(!current.learned||current.cc>=120)continue;
+                    receipt.bindings[bindingCount++]={current.reuse,current.parameter,current.cc};
+                    const auto found=std::find_if(plan.midi->routes.begin(),plan.midi->routes.end(),[&](const auto& seed){
+                        return seed.reuse==current.reuse&&seed.parameter==current.parameter;});
+                    if(found!=plan.midi->routes.end()&&found->cc==current.cc)continue;
+                    if(found!=plan.midi->routes.end())*found=current;
+                    else plan.midi->routes.push_back(current);
+                }
+                for(auto& row:plan.midi->routes)row.serial=0;
+            }catch(const std::bad_alloc&){failure=ERROR_NOT_ENOUGH_MEMORY;continue;}
+            auto result=fxTopologyApply(plan);
+            if(result.unlockPending){
+                std::array<unsigned long long,32> retained{};
+                retained[1]=3;retained[26]=static_cast<unsigned>(result.unlock);
+                setPaused(true);
+                do{publish(retained,0);waitResume();}while(!graph->lock(stream,FALSE));
+                setPaused(false);
+            }
+            if(result.phase)failure=result.error?static_cast<unsigned>(result.error):ERROR_GEN_FAILURE;
+            unsigned cursor=0;auto copy=[&](const FXTopologyValue& row){
+                receipt.topology[cursor++]={{row.exact,row.handle,row.kind,row.priority,0},row.pointer,row.kernel};};
+            for(unsigned i=0;i<graph->count;++i)copy(graph->current[i]);
+            for(unsigned i=0;i<graph->retiredCount;++i)copy(graph->retired[i]);
+            std::array<unsigned long long,32> status{};
+            status[1]=16;status[4]=sizeof(receipt.topology)+bindingCount*sizeof(ResolvedBinding);status[9]=channel;status[10]=result.phase;
+            status[11]=static_cast<unsigned>(result.error);status[14]=graph->count;status[15]=graph->retiredCount;status[16]=graph->faulted;
+            publish(status,0,reinterpret_cast<const unsigned char*>(&receipt));
+        }
+        return failure;
+    }
+    int runNwcPanic(unsigned first,unsigned& noteCount,unsigned& failure){
+        auto& k=*kernel;
+        AcquireSRWLockExclusive(&k.lock);
+        struct LockScope{SRWLOCK* lock;~LockScope(){ReleaseSRWLockExclusive(lock);}} scope{&k.lock};
+        MidiNoteLease lease(k.notes);MidiActivityLease activity(k.notes,nullptr,0,0,16,&k.pendingStream);
+        if(!activity.ready){failure=ERROR_NOT_READY;return 2;}
+        const auto lockStream=reinterpret_cast<BOOL(WINAPI*)(DWORD,BOOL)>(k.lockAddress);
+        const auto emit=reinterpret_cast<BOOL(WINAPI*)(HSTREAM,DWORD,DWORD,DWORD)>(k.emitAddress);
+        const auto error=reinterpret_cast<int(WINAPI*)()>(k.errorAddress);
+        if(!lockStream(stream,TRUE)){failure=static_cast<unsigned>(error());return 2;}
+        for(unsigned ch=first;ch<first+16;++ch){
+            if(!k.notes->humanization.cancel(stream,ch))failure=static_cast<unsigned>(error());
+            if(timing)for(unsigned key=0;key<128;++key){auto& q=timing->ingress[ch*128+key];q.head.store(q.tail.load());}
+            for(unsigned event:{MIDI_EVENT_SUSTAIN,MIDI_EVENT_SOSTENUTO,MIDI_EVENT_SOUNDOFF})
+                if(!emit(stream,ch,event,0))failure=static_cast<unsigned>(error());
+            std::fill_n(k.notes->counts.data()+ch*128,128,0ull);
+            LARGE_INTEGER tick{};QueryPerformanceCounter(&tick);
+            const MidiNoteAction clear{0xb0u|(123u<<8),ch,0,static_cast<unsigned long long>(tick.QuadPart)};
+            k.notes->observeActivity(clear,{});notes[noteCount++]=clear;
+        }
+        if(!lockStream(stream,FALSE)){
+            failure=static_cast<unsigned>(error());
+            k.pendingStream=stream;k.pendingThread=GetCurrentThreadId();return -2;
+        }
+        return failure?2:1;
+    }
     static unsigned __stdcall run(void* pointer){
         auto& s=*static_cast<MidiExecutionWorker*>(pointer);
         s.kernel->executionThread.store(GetCurrentThreadId());
@@ -9311,6 +9591,7 @@ struct MidiExecutionWorker {
                 ReleaseSRWLockExclusive(s.acceptanceLock());}
             s.publishPresentation(); // Outside every BASS/kernel/Note/canonical mutation scope.
             if(s.stopping.load()){
+                s.cancelNwcFrames();
                 s.cancelDirectQueued();
                 while(auto command=s.takeControl(true))s.runOwnedControl(std::move(command),true);
                 break;
@@ -9327,13 +9608,15 @@ struct MidiExecutionWorker {
             if(available==-4)continue; // Prepared command reached its exact ingress publication fence.
             if(available==0&&s.stopping.load())continue; // Explicit cancel results before ownership release.
             if(available<=0){s.publishPresentation(true);s.metric(21,static_cast<unsigned long long>(static_cast<long long>(available)));break;}
+            const bool nwcFrame=s.nwcFrame;
+            const unsigned nwcFinalAction=s.nwcFinalAction;
             if(!s.fileTransform(static_cast<unsigned>(descriptor[1])))continue;
             bool humanFile=false;
             if(s.ingress&&s.inputClient.load()==UINT64_MAX){AcquireSRWLockShared(s.acceptanceLock());
                 humanFile=s.file&&!s.file->tickets.empty()&&s.file->tickets.back().publication==s.inputPublication;
                 ReleaseSRWLockShared(s.acceptanceLock());}
             HumanFileScope humanFileScope(humanFile);
-            midiRouteOutput(&s,s.port,s.input.data(),static_cast<unsigned>(descriptor[1]));
+            if(!s.nwcReplayed)midiRouteOutput(&s,s.port,s.input.data(),static_cast<unsigned>(descriptor[1]),(descriptor[12]&~7ull)==0x100);
             // Original _forward_midi_bytes records nonempty input before its
             // bytearray/passive/SysEx/parser/preload work. Preserve that one
             // source entry, not transport QPC or a later delegated suffix.
@@ -9345,7 +9628,8 @@ struct MidiExecutionWorker {
             s.metric(0);s.metric(17,descriptor[1]);
             std::array<unsigned long long,32> record{};record[3]=descriptor[0];record[4]=descriptor[1];record[5]=descriptor[4];std::copy_n(descriptor+5,8,record.data()+6);
             if(descriptor[0]!=3)record[10]=descriptor[3]; // MID2 trace survives without inventing a MID3 origin.
-            s.origins->prepare(descriptor,record.data()+14,record[21],record[22]);
+            if(s.ingress)std::copy(s.ingressOrigin.begin(),s.ingressOrigin.end(),record.data()+14);
+            else s.origins->prepare(descriptor,record.data()+14,record[21],record[22]);
             const bool driver=record[19]!=0;
             const bool health=!s.timing||!driver||(descriptor[12]&~7ull)==0x100||s.timing->watch(static_cast<unsigned>(record[16]),record[17]);record[23]=health?1:0;
             if(!driver&&descriptor[0]==3)s.metric(19);
@@ -9380,7 +9664,7 @@ struct MidiExecutionWorker {
             // Original bytes and driver/read QPC, once before any transform.
             // Optional recording owns its disk thread; GUI/GIL and audio never
             // participate. Existing input dispatch remains authoritative.
-            if(s.recordingAttached.load(std::memory_order_acquire)&&(s.inputClient.load()!=UINT64_MAX||(descriptor[12]&~7ull)==0x100)){
+            if(!s.nwcReplayed&&s.recordingAttached.load(std::memory_order_acquire)&&(s.inputClient.load()!=UINT64_MAX||(descriptor[12]&~7ull)==0x100)){
                 AcquireSRWLockShared(&s.lock);
                 if(s.recording){
                     if(record[21]||record[22])s.recording->transportLoss(record[21]+record[22]);
@@ -9388,7 +9672,7 @@ struct MidiExecutionWorker {
                 }
                 ReleaseSRWLockShared(&s.lock);
             }
-            const int systemKind=midi_cc_kernel_system_reset_kind(s.kernel,s.stream,s.input.data(),static_cast<unsigned>(descriptor[1]));
+            const int systemKind=nwcFrame?0:midi_cc_kernel_system_reset_kind(s.kernel,s.stream,s.input.data(),static_cast<unsigned>(descriptor[1]));
             if((systemKind==1||systemKind==2||(systemKind==0&&descriptor[1]==9&&s.input[0]==0xf0&&s.input[1]==0x43&&s.input[3]==0x4c&&s.input[6]==0x7e))&&s.kernel->notes&&!s.kernel->notes->humanization.cancel(s.stream)){
                 s.stopping.store(true);break;
             }
@@ -9397,20 +9681,33 @@ struct MidiExecutionWorker {
                 unsigned long long noteCount=0,result[8]{};
                 const int pendingTail=midi_cc_kernel_reset_tail_pending(s.kernel,s.stream);
                 const bool ownedFrame=s.kernel->frameReceipt!=0;
-                const bool semanticOnly=!ownedFrame&&midi_cc_kernel_semantic_pending(s.kernel,s.stream)==1;
+                const bool semanticOnly=!nwcFinalAction&&!ownedFrame&&midi_cc_kernel_semantic_pending(s.kernel,s.stream)==1;
                 const bool tailOnly=!ownedFrame&&consumed==descriptor[1]&&pendingTail==1;
                 const bool systemReset=systemKind==1||systemKind==2;
                 const int settlement=s.settleFailedSelection();
                 if(settlement==-6){Sleep(1);continue;}
                 const unsigned resetMode=systemKind==2?MIDI_SYSTEM_GS:
                     systemKind==1?(s.input[4]==3?MIDI_SYSTEM_GM2:MIDI_SYSTEM_GM1):0;
-                int outcome=settlement==-5?-6:s.kernel->compatibilityCallback?0:semanticOnly?midi_cc_kernel_semantic_resume(s.kernel,s.stream):systemKind==3?1:systemReset?midiCCGMRun(s.kernel,s.stream,s.timing,resetMode):
+                unsigned nwcFailure=0,nwcNotes=0;
+                const bool nwcReset=nwcFinalAction==2;
+                int outcome=settlement==-5?-6:nwcReset?midiCCFileResetRun(s.kernel,s.stream,s.timing,31,s.port):
+                    nwcFinalAction==1?s.runNwcPanic(s.port*16,nwcNotes,nwcFailure):s.kernel->compatibilityCallback?0:semanticOnly?midi_cc_kernel_semantic_resume(s.kernel,s.stream):(nwcFrame||systemKind==3)?1:systemReset?midiCCGMRun(s.kernel,s.stream,s.timing,resetMode):
                     tailOnly?midi_cc_kernel_reset_tail(s.kernel,s.stream):
                     midiCCOwnedRun(s.kernel,s.stream,s.mode,s.port,s.input.data(),static_cast<unsigned>(descriptor[1]),
                     s.output.data(),static_cast<unsigned>(s.output.size()),s.actions.data(),static_cast<unsigned>(s.actions.size()),result,
                     s.notes.data()+totalNotes,static_cast<unsigned>(s.notes.size())-totalNotes,&noteCount,s.timing,record.data()+14,
                     ownedFrame?s.kernel->frameReceipt:0,ownedFrame?consumed:0);
-                if(systemKind>0&&!semanticOnly&&consumed==0)result[5]=descriptor[1];
+                if(nwcFinalAction){
+                    noteCount=nwcNotes;
+                    result[4]=nwcReset&&outcome==-8?static_cast<unsigned>(s.kernel->gmError):nwcFailure;
+                    if(outcome==1&&nwcReset)
+                        for(unsigned ch=s.port*16;ch<s.port*16+16;++ch){
+                            LARGE_INTEGER tick{};QueryPerformanceCounter(&tick);
+                            s.notes[noteCount++]={0xb0u|(123u<<8),ch,0,static_cast<unsigned long long>(tick.QuadPart)};
+                        }
+                    if(outcome<0&&outcome!=-2&&outcome!=-6)outcome=2;
+                }
+                if((nwcFrame||systemKind>0)&&!semanticOnly&&consumed==0)result[5]=descriptor[1];
                 if(semanticOnly){const int captured=midi_cc_kernel_take_actions(s.kernel,s.notes.data()+totalNotes,static_cast<unsigned>(s.notes.size())-totalNotes);
                     if(captured<0){s.stopping.store(true);break;}noteCount=static_cast<unsigned>(captured);}
                 if((tailOnly||systemReset)&&outcome<0){
@@ -9508,7 +9805,8 @@ struct MidiExecutionWorker {
                         s.metric(2);s.stopping.store(true);break;
                     }
                     if(s.kernel->frameReceipt||consumed<descriptor[1]||midi_cc_kernel_semantic_pending(s.kernel,s.stream)==1||midi_cc_kernel_reset_tail_pending(s.kernel,s.stream)==1||
-                       (systemReset&&midi_cc_kernel_system_reset_pending(s.kernel,s.stream)==1))continue;
+                       (systemReset&&midi_cc_kernel_system_reset_pending(s.kernel,s.stream)==1)||
+                       (nwcReset&&midi_cc_kernel_file_reset_pending(s.kernel,s.stream)==1))continue;
                     record[2]=1;
                 }else if(outcome==-8&&(midi_cc_kernel_reset_tail_pending(s.kernel,s.stream)==1||
                         (systemReset&&midi_cc_kernel_system_reset_pending(s.kernel,s.stream)==1))){
@@ -9528,6 +9826,10 @@ struct MidiExecutionWorker {
                 if(s.kernel->frameReceipt)continue; // Last-byte receipt still needs terminal completion.
                 if(semanticOnly&&(consumed<descriptor[1]||midi_cc_kernel_reset_tail_pending(s.kernel,s.stream)==1||
                     (systemReset&&midi_cc_kernel_system_reset_pending(s.kernel,s.stream)==1)))continue;
+                if(nwcReset&&record[2]==1){
+                    const unsigned fxFailure=s.resetNwcEffects();
+                    if(fxFailure){record[26]=fxFailure;record[2]=2;outcome=2;}
+                }
                 if(traceFrame)QueryPerformanceCounter(&traceEnd);
                 record[1]=1;
                 const bool observerOnly=s.nativeObserverCompletion(record,frameCaptureSerial,frameSemantics,frameSemanticFailures)||
@@ -9560,6 +9862,7 @@ struct MidiExecutionWorker {
             AcquireSRWLockExclusive(&s.lock);s.metrics[9]=reverted?1:0;s.metrics[10]=error;ReleaseSRWLockExclusive(&s.lock);}
         AcquireSRWLockExclusive(s.acceptanceLock());s.acceptingControls.store(false);
         const bool cancelled=s.stopping.load()||(!s.ingress&&s.queue->stopping);ReleaseSRWLockExclusive(s.acceptanceLock());
+        s.cancelNwcFrames();
         if(cancelled)s.cancelDirectQueued();
         // EOF admission closes before final drain, but read must not observe
         // ended until every accepted control completion has been published.
@@ -10652,6 +10955,15 @@ extern "C" __declspec(dllexport) unsigned long long __cdecl midi_execution_raw(v
 }
 extern "C" __declspec(dllexport) int __cdecl midi_execution_raw_pending(void* pointer){
     return pointer&&static_cast<MidiExecutionWorker*>(pointer)->directPending()?1:0;
+}
+extern "C" __declspec(dllexport) int __cdecl midi_execution_nwc_reset(void* pointer,unsigned action){
+    if(!pointer||action>2)return 0;
+    auto& worker=*static_cast<MidiExecutionWorker*>(pointer);
+    if(!worker.ingress)return action==0?1:0;
+    worker.nwcResetMode.store(action,std::memory_order_release);worker.wakeIngress();return 1;
+}
+extern "C" __declspec(dllexport) void __cdecl midi_execution_winmm_input_mask(void* pointer,unsigned mask){
+    if(pointer)static_cast<MidiExecutionWorker*>(pointer)->winmmInputMask.store(mask&255u);
 }
 extern "C" __declspec(dllexport) unsigned long long __cdecl midi_execution_attach(void* pointer,void* queue,unsigned port){
     if(!pointer||!queue||port>=8)return 0;auto& s=*static_cast<MidiExecutionWorker*>(pointer);auto* q=static_cast<MidiPipeQueue*>(queue);

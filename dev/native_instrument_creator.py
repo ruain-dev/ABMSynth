@@ -16,14 +16,14 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, QUrl, Signal, QSize, QTimer, QStandardPaths, QRectF, QEvent, QPoint, QPointF, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QKeySequence, QShortcut, QFontMetrics, QPixmap
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget,
-    QLineEdit, QLabel, QListWidget, QFileDialog, QSizePolicy, QLayout, QMessageBox, QApplication, QScrollBar, QStackedWidget)
-from native_layout import set_layout, ElasticLabel, WidthMeasuredPanel, FORM_ROW_HEIGHT, ContextActionLayout, control_row_layout, control_grid_layout, card_grid_layout, align_form_labels, bordered_page_layout, automatic_window_fit_allowed
+    QLineEdit, QLabel, QListWidget, QFileDialog, QSizePolicy, QLayout, QMessageBox, QApplication, QScrollBar, QStackedWidget, QBoxLayout)
+from native_layout import set_layout, ElasticLabel, FormCaptionLabel, WidthMeasuredPanel, FORM_ROW_HEIGHT, ContextActionLayout, FormRowLayout, control_row_layout, control_grid_layout, card_grid_layout, card_stack_layout, align_form_labels, bordered_page_layout, automatic_window_fit_allowed, make_horizontally_elastic
 from native_widgets import (NativeCard, NativeControlRow, NativeKnobField, NativeNumberBox, AnimatedComboBox, NativeOptionalLabel,
     NativeDecimalBox, NativeMessageBox, NativeTransportButton, NativeToggleSwitch, METRICS, make_action_button, widget_palette, apply_native_text_metrics,
     request_visual_frame,remove_visual_frame,compositor_visual_clock,NativeMenu,make_control_section,
     flat_tab_pane_stylesheet,make_navigation_tabs,refresh_native_pointer_feedback,native_wheel_steps,set_native_cursor,install_effect_tooltip,
-    NativeWindowSizeMotion,make_instrument_audition)
-from i18n import tr
+    NativeWindowSizeMotion,NativeRadioChoice,make_instrument_audition)
+from i18n import dialog_action, tr
 from effect_presentation import numeric_entry_domain
 from audio_output import AUDITION_NOTE_VELOCITY
 from error_reporting import record as record_support_event
@@ -1183,7 +1183,7 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         root=set_layout(QVBoxLayout(self),0,METRICS['section_gap'])
         root.setSizeConstraint(QLayout.SetNoConstraint)
         self.editor=QWidget();self.editor.setMinimumWidth(0)
-        body=set_layout(QVBoxLayout(self.editor),0,METRICS['section_gap'])
+        body=card_stack_layout(self.editor)
         root.addWidget(self.editor,1)
         def task_card(key):
             card=NativeCard();card.setMinimumWidth(0)
@@ -1203,7 +1203,8 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         saved_bar.addWidget(ElasticLabel(tr('creator.saved_instruments')))
         saved_bar.addWidget(self.saved_list,1);saved_bar.addWidget(self.open_button);saved_bar.addWidget(self.delete_button)
         identity_body.addLayout(saved_bar)
-        top=control_row_layout()
+        self.identity_address=WidthMeasuredPanel()
+        top=control_row_layout(self.identity_address)
         self.name=QLineEdit(self.draft.name);self.name.setMaxLength(80);self.name.setMinimumWidth(0)
         self.name.setAccessibleName(tr('creator.name'))
         # ValuePattern.SetValue uses setText,which emits textChanged but not
@@ -1211,29 +1212,33 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         self.name.textChanged.connect(lambda value:self.change('name',value))
         self.bank=NativeNumberBox(0,127,tr('creator.bank'));self.bank.setKeyboardTracking(False)
         self._melodic_bank=self.draft.bank if self.draft.bank<128 else 0
-        self.instrument_kind=IdentityChoice(tr('creator.instrument_kind'))
-        for kind in ('melodic','drums'):self.instrument_kind.addItem(tr('creator.kind_'+kind),int(kind=='drums'))
+        self.instrument_kind=NativeRadioChoice(((0,tr('creator.kind_melodic')),(1,tr('creator.kind_drums'))))
+        self.instrument_kind.setAccessibleName(tr('creator.instrument_kind'))
         self.program=IdentityChoice(tr('creator.instrument'))
         self.program.set_category_provider(lambda row:(tr('channel_editor.instrument_family_'+str(int(self.program.itemData(row))//8)),))
         self.drum_program=NativeNumberBox(0,127,tr('creator.program'))
         self.program_field=QStackedWidget();self.program_field.setMinimumSize(0,0)
         self.program_field.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
         self.program_field.addWidget(self.program);self.program_field.addWidget(self.drum_program)
-        self._identity_address_row=top
-        top.addWidget(self.instrument_kind,2)
+        top.addWidget(self.instrument_kind)
         self.address_labels={}
         for label,control in (('name',self.name),('bank',self.bank),('program',self.program_field)):
-            caption=ElasticLabel(tr('creator.'+label));self.address_labels[label]=caption
-            caption.setObjectName('FieldLabel')
+            field=QWidget()
+            field_layout=control_row_layout(field)
+            caption=FormCaptionLabel(tr('creator.'+label),control);self.address_labels[label]=caption
             caption.setBuddy(self.drum_program if label=='program' and self.draft.bank==128 else self.program if label=='program' else control)
-            top.addWidget(caption,0);top.addWidget(control,3 if label=='name' else 4 if label=='program' else 1)
+            field_layout.addWidget(caption)
+            make_horizontally_elastic(control)
+            field_layout.addWidget(control,1)
+            top.addWidget(field,3 if label=='name' else 4 if label=='program' else 1)
         self.program.setToolTip(tr('creator.program_tip'));self.drum_program.setToolTip(tr('creator.drum_program_tip'))
         self._populate_programs(self.draft.bank)
         self.bank.valueChanged.connect(lambda value:self.change('bank',value) if self.instrument_kind.value()==0 else None)
         self.instrument_kind.valueChanged.connect(self.change_instrument_kind)
         self.program.valueChanged.connect(lambda value:self.change('program',value))
         self.drum_program.valueChanged.connect(lambda value:self.change('program',value))
-        identity_body.addLayout(top)
+        identity_body.addWidget(self.identity_address)
+        self.identity_address.installEventFilter(self)
         self.address_info=QLabel();self.address_info.setWordWrap(True);self.address_info.setMinimumWidth(0)
         self.address_info.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         self.status=NativeOptionalLabel('',preferred_width=150)
@@ -1253,8 +1258,7 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         workspace.setColumnStretch(0,3);workspace.setColumnStretch(1,2)
         self.instrument_workspace=QWidget();self.instrument_workspace.setMinimumWidth(0)
         self.instrument_workspace.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
-        instrument_column=set_layout(QVBoxLayout(self.instrument_workspace),0,METRICS['section_gap'])
-        instrument_column.setAlignment(Qt.AlignTop)
+        instrument_column=card_stack_layout(self.instrument_workspace)
         body.addWidget(self.authoring_workspace)
         body.addStretch(1)
         self.sample_source_card,sample_body=task_card('card_source')
@@ -1276,7 +1280,7 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         self.wave_canvas=InstrumentWaveCanvas(editable=True);self.wave_canvas.waveEdited.connect(self.set_wave)
         self.wave_canvas.setToolTip(tr('creator.wave_help'))
         sample_bar=control_row_layout()
-        self.import_button=make_action_button(tr('creator.import'),self.choose_samples)
+        self.import_button=make_action_button(dialog_action(tr('creator.import')),self.choose_samples)
         self.remove_button=make_action_button(tr('creator.remove'),self.remove_zone)
         self.sample_list=AnimatedComboBox();self.sample_list.setMinimumWidth(0)
         sample_bar.addWidget(self.import_button);sample_bar.addWidget(self.sample_list,1);sample_bar.addWidget(self.remove_button)
@@ -1333,8 +1337,8 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
                 ('velocity_low',1,127),('velocity_high',1,127),('tune',-99,99))):
             cell=QWidget();line=set_layout(QHBoxLayout(cell),0,6)
             cell.setFixedHeight(FORM_ROW_HEIGHT)
-            line.addWidget(ElasticLabel(tr('creator.'+key)),1)
             control=NoteChoice(tr('creator.'+key)) if key in ('root','low','high') else NativeNumberBox(lo,hi,tr('creator.'+key));self.zone_fields[key]=control
+            line.addWidget(FormCaptionLabel(tr('creator.'+key),control),1)
             if key not in ('root','low','high'):control.setToolTip(tr('creator.help_'+key))
             if key=='tune':control.setSuffix(' cents')
             control.valueChanged.connect(lambda value,field=key:self.change_zone(field,value));line.addWidget(control,1)
@@ -1353,25 +1357,38 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
         self.key_range=SampleKeyRange();self.key_range.rangeEdited.connect(self.change_zone)
         self.key_range.noteOn.connect(self.audition_note_on);self.key_range.noteOff.connect(self.audition_note_off)
         mapping_body.addStretch(1)
-        self.sample_loop_section,loop_grid=make_control_section(tr('creator.instrument_loop'))
-        mapping_body.insertWidget(mapping_body.count()-1,self.sample_loop_section)
+        self.sample_loop_section = WidthMeasuredPanel()
+        loop_grid = control_grid_layout(self.sample_loop_section)
+        loop_grid.setColumnStretch(0, 1)
+        loop_grid.setColumnStretch(1, 1)
+        mapping_body.insertWidget(mapping_body.count()-1, self.sample_loop_section)
         trim=control_grid_layout()
         for index,key in enumerate(('start','end','loop_start','loop_end')):
             cell=QWidget();line=set_layout(QHBoxLayout(cell),0,6)
             cell.setFixedHeight(FORM_ROW_HEIGHT)
-            line.addWidget(ElasticLabel(tr('creator.'+key)),1)
             control=NativeDecimalBox(0,1,tr('creator.'+key),decimals=3,suffix=' ms');self.zone_fields[key]=control
+            line.addWidget(FormCaptionLabel(tr('creator.'+key),control),1)
             control.setToolTip(tr('creator.help_'+key))
             control.valueChanged.connect(lambda value,field=key:self.change_zone(field,round(value*self.zone().rate/1000)) if self.zone() else None);line.addWidget(control,1)
             if key in ('start','end'):trim.addWidget(cell,0,index)
             else:loop_grid.addWidget(cell,1,index-2)
         editing_body.addLayout(trim)
-        self.loop=AnimatedComboBox()
-        self.loop.setToolTip(tr('creator.help_loop'))
-        self.loop.setProperty('fitPreferenceContents',True)
-        for value in (0,1,3):self.loop.addItem(tr('creator.loop_'+str(value)),value)
-        self.loop.currentIndexChanged.connect(lambda _:self.change_zone('loop',self.loop.currentData()))
-        loop_grid.addWidget(self.loop,0,0,1,2)
+        self.loop = NativeRadioChoice(tuple((value, tr('creator.loop_'+str(value))) for value in (0, 1, 3)))
+        make_horizontally_elastic(self.loop, QSizePolicy.Preferred)
+        self.loop.setAccessibleName(tr('creator.instrument_loop'))
+        loop_row = WidthMeasuredPanel()
+        choice_layout = set_layout(FormRowLayout(loop_row), 0, METRICS['form_column_gap'])
+        caption = self._sample_loop_caption = FormCaptionLabel(tr('creator.instrument_loop'), self.loop)
+        caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        caption.setWordWrap(True)
+        caption.setBuddy(self.loop)
+        choice_layout.addWidget(caption)
+        choice_layout.addWidget(self.loop)
+        install_effect_tooltip(tr('creator.help_loop'), loop_row, caption, self.loop, *self.loop.buttons)
+        self.loop.valueChanged.connect(lambda value: self.change_zone('loop', value))
+        loop_grid.addWidget(loop_row, 0, 0, 1, 2)
+        self.sample_loop_section.installEventFilter(self)
+        self.zone_fields['loop_start'].installEventFilter(self)
         self.sample_controls={}
         sample_controls_grid=control_grid_layout()
         for key,lo,hi,initial,step,unit in (('speed',25,400,100,1,'%'),('pitch',-24,24,0,.01,'semitones'),('sample_gain',-48,12,0,.1,'dB')):
@@ -1728,19 +1745,31 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
             self.bank.setRange(128,128) if drums else self.bank.setRange(0,127)
             self.bank.setValue(self.draft.bank)
             self.bank.setEnabled(not drums)
-            self.address_labels['bank'].setEnabled(not drums)
             self.bank.setToolTip(tr('creator.drum_bank_tip' if drums else 'creator.bank_tip'))
             self.address_labels['bank'].setToolTip(self.bank.toolTip())
             self.instrument_kind.setValue(int(drums))
             self.drum_program.setValue(self.draft.program)
             self.program_field.setCurrentWidget(self.drum_program if drums else self.program)
-            self._identity_address_row.setStretch(self._identity_address_row.indexOf(self.name),6 if drums else 3)
-            self._identity_address_row.setStretch(self._identity_address_row.indexOf(self.program_field),1 if drums else 4)
             self.address_labels['program'].setBuddy(self.drum_program if drums else self.program)
             self.address_labels['program'].setText(tr('creator.program' if drums else 'creator.instrument'))
             if not drums:self._melodic_bank=self.draft.bank
+            self._reflow_identity_address()
         finally:
             for control,state in zip(controls,blocked):control.blockSignals(state)
+
+    def _reflow_identity_address(self):
+        layout=self.identity_address.layout()
+        gap=layout.spacing()
+        widths=(self.name.minimumSizeHint().width(),self.bank.sizeHint().width(),METRICS['form_label_width'])
+        preferred=self.instrument_kind.sizeHint().width()+6*gap+sum(
+            label.sizeHint().width()+width for label,width in zip(self.address_labels.values(),widths))
+        stacked=self.identity_address.width()<preferred
+        direction=QBoxLayout.TopToBottom if stacked else QBoxLayout.LeftToRight
+        if layout.direction()!=direction:
+            layout.setDirection(direction)
+        drums=self.draft.bank==128
+        for index,stretch in enumerate((0,0,0,0) if stacked else (0,6,1,1) if drums else (0,3,1,4)):
+            layout.setStretch(index,stretch)
 
     def _set_unused_address(self,draft):
         used={(item['bank'],item['preset']) for item in getattr(self.group_dialog,'_instrument_rows',())}
@@ -1866,7 +1895,7 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
                     if time_field:control.setMaximum(len(zone.pcm)*1000/zone.rate)
                     control.setValue(getattr(zone,key)*1000/zone.rate if time_field else getattr(zone,key))
             self.loop.setEnabled(zone is not None)
-            if zone:self.loop.setCurrentIndex(self.loop.findData(zone.loop))
+            if zone:self.loop.setValue(zone.loop)
             self.remove_button.setEnabled(zone is not None)
             if sample_mode:
                 self.sample_canvas.set_zone(zone)
@@ -2087,7 +2116,20 @@ class NativeInstrumentCreator(WidthMeasuredPanel):
             remove_visual_frame(self._cursor_handle,self)
             self._cursor_handle.removeEventFilter(self);self._cursor_handle=None
 
+    def _align_sample_loop_caption(self):
+        # Both controls use the repeat-time field's actual input edge.
+        caption = self._sample_loop_caption
+        start = self.zone_fields['loop_start'].mapTo(self.sample_loop_section, QPoint()).x()
+        form = caption.parentWidget().layout()
+        caption.set_preferred_width(start - form.spacing())
+        form.activate()
+
     def eventFilter(self,watched,event):
+        if watched is self.identity_address and event.type() in (QEvent.Resize,QEvent.FontChange):
+            self._reflow_identity_address()
+        if ((watched is getattr(self, 'sample_loop_section', None) and event.type() in (QEvent.Resize, QEvent.Show))
+                or (watched is getattr(self, 'zone_fields', {}).get('loop_start') and event.type() == QEvent.Move)):
+            self._align_sample_loop_caption()
         if (not self._cursor_precise and watched is self._cursor_handle and event.type()==QEvent.UpdateRequest
                 and not compositor_visual_clock(watched,self)):self._advance_sample_cursor()
         return super().eventFilter(watched,event)

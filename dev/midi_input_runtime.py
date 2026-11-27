@@ -20,7 +20,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from functools import wraps
 from pathlib import Path
-from effect_presentation import numeric_entry_domain
+from effect_presentation import numeric_entry_domain, CcValueRange
 
 from bass_bindings import (
     SYNCPROC,
@@ -126,31 +126,58 @@ class NativeMidiPorts:
         lib=self.library
         for name,args,restype in (
             ('create',[ctypes.c_void_p],ctypes.c_void_p),('input',[ctypes.c_void_p,ctypes.c_uint,ctypes.c_uint],ctypes.c_int),
-            ('output',[ctypes.c_void_p,ctypes.c_uint,ctypes.c_uint],ctypes.c_int),
+            ('shared_output',[ctypes.c_void_p,ctypes.c_uint,ctypes.c_uint],ctypes.c_int),
             ('virtual',[ctypes.c_void_p,ctypes.c_uint,ctypes.c_uint],ctypes.c_int),
             ('start',[ctypes.c_void_p],ctypes.c_int),('release',[ctypes.c_void_p],ctypes.c_int),
             ('stats',[ctypes.c_void_p,ctypes.POINTER(ctypes.c_uint64)],ctypes.c_uint)):
             function=getattr(lib,'midi_ports_'+name);function.argtypes=args;function.restype=restype
         self.pointer=lib.midi_ports_create(execution.pointer)
         if not self.pointer:raise RuntimeError(tr('midi_ports.start_failed'))
-        self.settings=settings
+        self.settings=settings.normalized()
+        self.active_devices=set()
 
-    def start(self):
-        settings=self.settings;lib=self.library;log=self.log
+    def start(self, *, required=()):
+        lib=self.library;log=self.log
         catalog=midi_endpoint_catalog()
-        for row in settings.ports:
-            port=row['slot']
-            lib.midi_ports_virtual(self.pointer,port,int(row['virtual_out']))
-            for direction,function in (('inputs',lib.midi_ports_input),('outputs',lib.midi_ports_output)):
-                available={item['key']:item for item in catalog[direction]}
-                for key in row[direction]:
-                    device=available.get(key)
-                    if device is None:
-                        try:label=json.loads(key)[0]
-                        except (ValueError,TypeError,IndexError):label=key
-                        log(log_text('midi_ports.missing',device=label,port=row['name']));continue
-                    if device['own']:log(log_text('midi_ports.loop_blocked',device=device['name']));continue
-                    if not function(self.pointer,device['id'],port):log(log_text('midi_ports.open_failed',device=device['name'],port=row['name']))
+        ports=self.settings.ports
+        for row in ports:
+            lib.midi_ports_virtual(self.pointer,row['slot'],int(row['virtual_out']))
+        opened_inputs=set()
+        port_names={row['slot']:row['name'] for row in ports}
+        for direction in ('inputs','outputs'):
+            available={item['key']:item for item in catalog[direction]}
+            for key, destination in self.settings.device_routes(direction).items():
+                target=port_names[destination] if direction=='inputs' else tr('midi_ports.output')
+                device=available.get(key)
+                route=(direction,key,destination)
+                if device is None:
+                    try:label=json.loads(key)[0]
+                    except (ValueError,TypeError,IndexError):label=key
+                    if route in required:
+                        raise RuntimeError(tr('midi_ports.missing',device=label,port=target))
+                    log(log_text('midi_ports.missing',device=label,port=target));continue
+                if device['own']:
+                    if route in required:
+                        raise RuntimeError(tr('midi_ports.loop_blocked',device=device['name']))
+                    log(log_text('midi_ports.loop_blocked',device=device['name']));continue
+                if direction=='inputs':
+                    opened=lib.midi_ports_input(self.pointer,device['id'],destination)
+                    if opened:opened_inputs.add(key)
+                elif destination==0xff:
+                    opened=lib.midi_ports_shared_output(self.pointer,device['id'],int(key in opened_inputs))
+                else:
+                    routed=getattr(lib,'midi_ports_routed_output',None)
+                    if routed is None:
+                        raise RuntimeError(tr('midi_ports.routing_unavailable'))
+                    routed.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_uint,ctypes.c_uint]
+                    routed.restype=ctypes.c_int
+                    opened=routed(self.pointer,device['id'],destination,int(key in opened_inputs))
+                if opened:
+                    self.active_devices.add(route)
+                elif route in required:
+                    raise RuntimeError(tr('midi_ports.open_failed',device=device['name'],port=target))
+                else:
+                    log(log_text('midi_ports.open_failed',device=device['name'],port=target))
         if not lib.midi_ports_start(self.pointer):raise RuntimeError(tr('midi_ports.start_failed'))
 
     def poll(self):
@@ -4521,6 +4548,8 @@ class ChannelMidiLearn:
         self._dispatch: dict[tuple[int, int], tuple[str, ...]] = {}
         self._pending_all = False
         self._pending_destination = None
+        self._pending_range = None
+        self._value_ranges = {}
         # This notification may run on the MIDI thread. The Qt owner must
         # queue it; neither disk access nor widget work belongs in this class.
         self.on_change = None
@@ -4558,12 +4587,14 @@ class ChannelMidiLearn:
             clone.caption_revision=self.caption_revision
             clone._assignments={key:set(sources) for key,sources in self._assignments.items()}
             clone._destinations=dict(self._destinations);clone._names=dict(self._names)
+            clone._value_ranges = dict(self._value_ranges)
+            clone._pending_range = self._pending_range
             clone._all_channels=set(self._all_channels);clone._dispatch=dict(self._dispatch)
             # on_change is deliberately None; compilation owns no UI/disk hook.
             return clone
 
     @_publish_channel_configuration
-    def arm(self, channel: int, target: str, *, all_channels=False, destination=None) -> None:
+    def arm(self, channel: int, target: str, *, all_channels=False, destination=None, value_range=None) -> None:
         self._validate(channel, target)
         if target == "mode":
             raise ValueError("Voice mode uses standard channel-mode messages")
@@ -4571,17 +4602,19 @@ class ChannelMidiLearn:
             raise ValueError("auxiliary MIDI destination")
         if not target.startswith("aux_") and destination not in (None, target):
             raise ValueError("MIDI control destination")
+        value_range = self.validate_range(target, destination, value_range)
         with self.lock:
             if (self._pending==(channel,target) and self._pending_all==bool(all_channels) and
-                    self._pending_destination==destination):return
+                    self._pending_destination==destination and self._pending_range == value_range):return
             self._pending = channel, target
             self._pending_all = bool(all_channels)
             self._pending_destination = destination
+            self._pending_range = value_range
             self.revision += 1
 
     @_publish_channel_configuration
     def assign(self, channel: int, target: str, controller: int, *, all_channels=False,
-               destination=None) -> None:
+               destination=None, value_range=None) -> None:
         """Replace one control's source, without changing its musical value."""
         self._validate(channel, target)
         if target == "mode":
@@ -4592,20 +4625,48 @@ class ChannelMidiLearn:
             raise ValueError("auxiliary MIDI destination")
         if not target.startswith("aux_") and destination not in (None, target):
             raise ValueError("MIDI control destination")
+        value_range = self.validate_range(target, destination, value_range)
         with self.lock:
             channels=tuple(self.channels()) if all_channels else (channel,)
             unchanged=self._pending is None and all(
                 self._assignments.get((ch,target))=={controller} and
                 self._destinations.get((ch,target))==(destination or target) and
+                self._value_ranges.get((ch,target)) == value_range and
                 ((ch,target) in self._all_channels)==bool(all_channels) for ch in channels)
             conflicts=target in CHANNEL_MODE_SWITCHES and any(
                 other!=target and self._assignments.get((ch,other))=={controller}
                 for ch in channels for other in CHANNEL_MODE_SWITCHES)
             if unchanged and not conflicts:return
-            self._assign_locked(channel, target, controller, all_channels, destination)
+            self._assign_locked(channel, target, controller, all_channels, destination, value_range)
         self._notify()
 
-    def _assign_locked(self, channel, target, controller, all_channels, destination):
+    @staticmethod
+    def validate_range(target, destination, value_range):
+        if value_range is None:
+            return None
+        parameter = CHANNEL_PARAMETERS.get(destination or target)
+        if not isinstance(value_range, CcValueRange) or parameter is None or target in CHANNEL_MODE_SWITCHES:
+            raise ValueError(tr('channel_editor.cc_range_invalid'))
+        return value_range.validate(parameter.minimum, parameter.maximum)
+
+    def value_range(self, channel, target):
+        with self.lock:
+            return self._value_ranges.get((channel, target))
+
+    def source_value_range(self, channel, controller, target):
+        with self.lock:
+            for key, sources in self._assignments.items():
+                if key[0] == channel and controller in sources and self._destinations.get(key, key[1]) == target:
+                    return self._value_ranges.get(key)
+        return None
+
+    def cc_value(self, channel, controller, target, value):
+        value_range = self.source_value_range(channel, controller, target)
+        return int(round(value_range.value(value))) if value_range else channel_cc_target_value(target, value)
+
+    def _assign_locked(self, channel, target, controller, all_channels, destination, value_range=...):
+        if value_range is ...:
+            value_range = self._pending_range if self._pending == (channel, target) else None
         # A source CC is not a sound-function name. Aliases are sparse,
         # explicit edits and remain independent on every channel, including
         # when the same source is assigned globally or captured by Learn.
@@ -4619,15 +4680,21 @@ class ChannelMidiLearn:
                         self._assignments.pop(conflict, None)
                         self._destinations.pop(conflict, None)
                         self._names.pop(conflict, None)
+                        self._value_ranges.pop(conflict, None)
                         self._all_channels.discard(conflict)
             key = ch, target
             self._assignments[key] = {controller}
             self._destinations[key] = destination or target
+            if value_range is None:
+                self._value_ranges.pop(key, None)
+            else:
+                self._value_ranges[key] = value_range
             if all_channels:
                 self._all_channels.add(key)
             else:
                 self._all_channels.discard(key)
         self._pending = None
+        self._pending_range = None
         self.revision += 1
         self._reindex_locked()
 
@@ -4702,6 +4769,7 @@ class ChannelMidiLearn:
         with self.lock:
             if self._pending is not None and (channel is None or self._pending[0] == channel):
                 self._pending = None
+                self._pending_range = None
                 self.revision += 1
 
     def remove(self, channel: int, target: str) -> None:
@@ -4721,9 +4789,11 @@ class ChannelMidiLearn:
                 self._assignments.pop(key, None)
                 self._destinations.pop(key, None)
                 self._names.pop(key, None)
+                self._value_ranges.pop(key, None)
                 self._all_channels.discard(key)
                 if self._pending == key:
                     self._pending = None
+                    self._pending_range = None
                     changed = True
             if changed:
                 self._reindex_locked()
@@ -4739,8 +4809,10 @@ class ChannelMidiLearn:
                 self._assignments.clear()
                 self._destinations.clear()
                 self._names.clear()
+                self._value_ranges.clear()
                 self._all_channels.clear()
                 self._pending = None
+                self._pending_range = None
             else:
                 if not 0 <= channel < MIDI_CHANNEL_LIMIT:
                     raise ValueError("channel")
@@ -4750,9 +4822,11 @@ class ChannelMidiLearn:
                     self._assignments.pop(key, None)
                     self._destinations.pop(key, None)
                     self._names.pop(key, None)
+                    self._value_ranges.pop(key, None)
                     self._all_channels.discard(key)
                 if self._pending is not None and self._pending[0] == channel:
                     self._pending = None
+                    self._pending_range = None
             if changed:
                 self.revision += 1
                 self._reindex_locked()
@@ -4782,6 +4856,11 @@ class ChannelMidiLearn:
                 values.update({prefix + "cc": str(next(iter(sources))),
                                prefix + "target": self._destinations.get((channel, target), target),
                                prefix + "all": str(int((channel, target) in self._all_channels))})
+                value_range = self._value_ranges.get((channel, target))
+                if value_range:
+                    for key, value in zip(('minimum', 'maximum', 'step'),
+                            (value_range.minimum, value_range.maximum, value_range.step)):
+                        values[prefix + key] = str(int(round(value)))
             for (channel, target), name in self._names.items():
                 values[f"ch{channel + 1:02d}.{target}.name"] = name
             return values
@@ -4802,7 +4881,9 @@ class ChannelMidiLearn:
                         continue
                     channel = int(channel_key[2:]) - 1
                     prefix = key[:-2]
-                    self.assign(channel, target, int(value), destination=values.get(prefix + "target"))
+                    names = tuple(prefix + key for key in ('minimum', 'maximum', 'step'))
+                    value_range = CcValueRange(*(float(values[name]) for name in names)) if any(name in values for name in names) else None
+                    self.assign(channel, target, int(value), destination=values.get(prefix + "target"), value_range=value_range)
                     if report is not None: report.record('MIDI CC',key,'accepted')
                     # Missing names are valid. Legacy saved names (including
                     # CustomN) have no origin metadata, so preserve rather
@@ -5891,11 +5972,15 @@ class NativeCCKernel:
                 destination=functions.get((channel,source),source)
                 mapped=(channel,source) in functions
                 key=keys.get(channel,60)
-                cache_key=(source,destination,key if destination=='key_pressure' else None,kind)
+                value_range = learn.source_value_range(channel, cc, source) if kind == 'learn' else None
+                cache_key=(source,destination,key if destination=='key_pressure' else None,kind,value_range)
                 if cache_key not in tables:
                     values=[]
                     for value in range(128):
-                        amount=channel_cc_target_value(source,value) if kind=='learn' else value
+                        amount = value
+                        if kind == 'learn':
+                            amount = (int(round(value_range.value(value))) if value_range else
+                                      channel_cc_target_value(source, value))
                         target=ChannelControlPolicy.convert(source,destination,amount)
                         raw=(0 if destination is None else (target<<8)|key if destination=='key_pressure' else
                             MidiPerformanceControls.expression_parameter(destination,target)
@@ -5938,8 +6023,12 @@ class NativeCCKernel:
         for captured_cc in range(120):
             successor=snapshot.control_clone(channels=channels)
             with successor.lock:successor._assign_locked(channel,target,captured_cc,all_channels,destination)
+            range_sources = set()
+            for key, sources in successor._assignments.items():
+                if snapshot._value_ranges.get(key) != successor._value_ranges.get(key):
+                    range_sources.update((key[0], controller) for controller in sources)
             affected=tuple(key for key in dict.fromkeys((*base_dispatch,*successor._dispatch))
-                if base_dispatch.get(key)!=successor._dispatch.get(key))
+                if base_dispatch.get(key)!=successor._dispatch.get(key) or key in range_sources)
             affected_set=set(affected)
             # The original compiler sees only changed rows and their relevant
             # function policies; removed learned91/93/94 rows still expose
@@ -7169,6 +7258,12 @@ class NativeMidiExecution:
     def start(self):
         with self.borrow() as pointer:return bool(pointer and self.library.midi_execution_start(pointer))
 
+    def configure_nwc_reset(self, mode):
+        function=getattr(self.library,"midi_execution_nwc_reset",None)
+        if function is None:return mode==0
+        function.argtypes=[ctypes.c_void_p,ctypes.c_uint];function.restype=ctypes.c_int
+        with self.borrow() as pointer:return bool(pointer and function(pointer,mode))
+
     def configure_auto_reset(self, seconds):
         if not self.auto_reset_ready:return False
         function=self.library.midi_execution_idle_configure
@@ -8137,6 +8232,21 @@ class NativeMidiExecution:
             report=dict(ticket=row[0],disposition=14,native_trace_fence=True,control_ticket=row[6],phase=row[10],
                 captured_frames=row[9],dropped_frames=row[11])
             self.pending=report;return report
+        if row[1]==16:
+            import struct
+            size=ctypes.sizeof(_NativeFXTopologySnapshot2)
+            count=row[14]+row[15]
+            binding_size=row[4]-64*size
+            if count>64 or row[9]>=128 or not 0<=binding_size<=256*16 or binding_size%16:
+                raise ValueError('channel audio FX Reset snapshot bounds')
+            raw=_native_owned_bytes(self.payload,row[4])
+            mirrors=(_NativeFXTopologySnapshot2*count).from_buffer_copy(raw)
+            rows=tuple((entry.exact,entry.handle,entry.kind,entry.priority,entry.reserved,entry.pointer,entry.kernel) for entry in mirrors)
+            report=dict(ticket=row[0],disposition=16,topology_command=True,channel=row[9],phase=row[10],
+                error=ctypes.c_int(row[11]).value,topology_current=rows[:row[14]],topology_retired=rows[row[14]:],
+                topology_faulted=bool(row[16]),learned_bindings=tuple(struct.iter_unpack('<QII',raw[64*size:])))
+            self.pending=report
+            return report
         if row[13]==4096 and row[1] in (5,10,15):
             if row[4] or row[24]:raise ValueError('idle reset receipt bounds')
             report=dict(ticket=row[0],disposition=row[1],auto_reset=True,successful=bool(row[9]),
@@ -8316,6 +8426,10 @@ class NativeMidiExecution:
                 self.owner.auto_reset_clock.native_completed()
             report['metadata_replayed']=True;self.pending=None
             if not report['successful']:self.terminal_fault=dict(report)
+            return True
+        if report['disposition']==16:
+            self.owner.stream_effects.channel_fx.replay_native_reset(report)
+            self.pending=None
             return True
         if report['disposition']==10:
             if not self.owner.drain_native_controls():return False
@@ -8837,7 +8951,7 @@ class NativeMidiClientFactory:
                         if not report['successful'] and report.get('phase')!=5:
                             self.error=RuntimeError(tr('runtime.midi_filter_config_failed',error=('idle reset terminal',report['error'])))
                             if self.on_error is not None:self.on_error(self.error)
-                    elif report['disposition'] in (1,4,6,7,8,10):
+                    elif report['disposition'] in (1,4,6,7,8,10,16):
                         while not self.execution.replay(report):time.sleep(.001)
                         if report['disposition'] in (6,8,10):self.execution.resume(report)
                     elif report['disposition'] in (3,5):self.execution.resume(report,retry_unlock=True)
@@ -10286,7 +10400,10 @@ class MidiInputRuntime:
         self.native_factory=None
         from settings import load_midi_ports
         self.port_settings=load_midi_ports();self.port_router=None
+        self._port_switch_pending=False
+        self._winmm_input_mask=self._configured_input_mask(self.port_settings)
         self._native_preparation=None
+        self._nwc_reset_mode=0
         from midi_recording import MidiPerformanceRecorder
         self.midi_recorder = MidiPerformanceRecorder(self)
 
@@ -10374,6 +10491,13 @@ class MidiInputRuntime:
             return NativeMidiClientFactory(execution,self._receive_midi,source_runtime=source_runtime,full_selection=full_selection,
                 on_error=lambda error:owner.append_log(log_text('midi_pipe.callback_failed',error=error)))
 
+    def configure_nwc_reset(self, action):
+        from settings import NWC_RESET_ACTIONS
+        mode=NWC_RESET_ACTIONS.index(action)
+        if self.native_factory is not None and not self.native_factory.execution.configure_nwc_reset(mode):
+            raise RuntimeError(tr("preferences.nwc_reset_unavailable"))
+        self._nwc_reset_mode=mode
+
     def bind_native_factory(self,factory):
         """Explicit composition admission, never DLL-presence autoactivation.
 
@@ -10385,6 +10509,8 @@ class MidiInputRuntime:
                 execution.owner is not owner or not execution.pointer or factory.on_midi!=self._receive_midi):
             raise ValueError('native MIDI session admission')
         if owner.channel_command_executor not in (None,execution):raise ValueError('native MIDI command owner')
+        if self._nwc_reset_mode and not execution.configure_nwc_reset(self._nwc_reset_mode):
+            raise RuntimeError(tr("preferences.nwc_reset_unavailable"))
         self.native_factory=factory
         if owner.channel_command_executor is None:owner.attach_channel_executor(execution)
         roots=self._native_preparation
@@ -10442,6 +10568,101 @@ class MidiInputRuntime:
         self._native_preparation=None
         return True
 
+    @staticmethod
+    def _configured_input_mask(settings):
+        return sum(1 << row['slot'] for row in settings.ports if row['virtual_in'])
+
+    def _set_winmm_input_mask(self, mask):
+        if self.native_factory is not None:
+            execution=self.native_factory.execution
+            set_mask=getattr(execution.library,'midi_execution_winmm_input_mask',None)
+            if set_mask is None:
+                if self.server is not None and mask!=self._winmm_input_mask:
+                    raise RuntimeError(tr('midi_ports.start_failed'))
+                self._winmm_input_mask=mask
+                return
+            set_mask.argtypes=[ctypes.c_void_p,ctypes.c_uint]
+            set_mask.restype=None
+            with execution.borrow() as pointer:
+                if not pointer:
+                    raise RuntimeError(tr('midi_ports.start_failed'))
+                set_mask(pointer,mask)
+        self._winmm_input_mask=mask
+
+    def _open_port_router(self, settings, *, required=()):
+        if self.native_factory is not None and self.server is not None:
+            self.port_router=NativeMidiPorts(self.native_factory.execution,settings,self.engine.append_log)
+            self.port_router.start(required=required)
+
+    def _close_port_router(self):
+        if self.port_router is not None and not self.port_router.close():
+            raise RuntimeError(tr('midi_ports.close_failed'))
+        self.port_router=None
+
+    def apply_port_settings(self, settings, *, publish, prepare, silence):
+        """Switch the MIDI connections while keeping the synthesis stream."""
+        settings=settings.normalized()
+        previous=self.port_settings
+        if settings.serialized()==previous.serialized() and not self._port_switch_pending:
+            return
+        before={row['slot']:row for row in previous.ports}
+        def routes(port_settings):
+            devices={(direction,key,destination) for direction in ('inputs','outputs')
+                     for key,destination in port_settings.device_routes(direction).items()}
+            outputs={row['slot'] for row in port_settings.ports if row['virtual_out']}
+            return devices,outputs
+        old_devices,old_outputs=routes(previous)
+        new_devices,new_outputs=routes(settings)
+        reconnect=(self._port_switch_pending or old_devices!=new_devices or old_outputs!=new_outputs)
+        active_devices=self.port_router.active_devices if self.port_router is not None else set()
+        old_mask=self._configured_input_mask(previous)
+        new_mask=self._configured_input_mask(settings)
+        removed_inputs={slot for direction,_,slot in old_devices-new_devices if direction=='inputs'}
+        removed_inputs.update(slot for slot in before if (old_mask & ~new_mask) & (1<<slot))
+        prepare(settings)
+        if old_mask!=new_mask:
+            self._set_winmm_input_mask(old_mask & new_mask)
+        published=False
+        try:
+            if reconnect:
+                self._port_switch_pending=True
+                self._close_port_router()
+            if removed_inputs:
+                silence(removed_inputs)
+            if reconnect:
+                old_keys={route[:2] for route in old_devices}
+                active_keys={route[:2] for route in active_devices}
+                required={route for route in new_devices if route[:2] not in old_keys or route[:2] in active_keys}
+                self._open_port_router(settings,required=required)
+            published=True
+            publish(settings)
+            if old_mask!=new_mask:
+                self._set_winmm_input_mask(new_mask)
+        except (OSError,RuntimeError,ValueError) as error:
+            recovery_errors=[]
+            if published:
+                try:
+                    publish(previous)
+                except (OSError,RuntimeError,ValueError) as restore_error:
+                    recovery_errors.append(str(restore_error))
+            if reconnect:
+                try:
+                    self._close_port_router()
+                    self._open_port_router(previous,required=active_devices)
+                    self._port_switch_pending=False
+                except (OSError,RuntimeError,ValueError) as restore_error:
+                    recovery_errors.append(str(restore_error))
+            if old_mask!=new_mask:
+                try:
+                    self._set_winmm_input_mask(old_mask)
+                except (OSError,RuntimeError,ValueError) as restore_error:
+                    recovery_errors.append(str(restore_error))
+            if recovery_errors:
+                raise RuntimeError(tr('midi_ports.restore_failed',error='\n'.join(recovery_errors))) from error
+            raise
+        self.port_settings=settings
+        self._port_switch_pending=False
+
     def _receive_midi(self, payload: bytes, driver_sequence: int | None = None):
         capture=getattr(self.engine,"capture_midi_received_time",None)
         native_clock=getattr(self.server,"received_timestamp",WinMMMidiPipeServer.received_timestamp)
@@ -10465,18 +10686,20 @@ class MidiInputRuntime:
         if port is not None:
             if type(port) is not int or not 0<=port<MIDI_PORT_LIMIT:raise ValueError('MIDI input port')
             if port:kwargs['port']=port
+        if not self._winmm_input_mask & (1 << (port or 0)):
+            return True
         kwargs["received_origin"]=origin
         return self.engine.forward_midi_bytes(payload, trace_packet_id=packet_id,**kwargs)
 
     def start(self) -> bool:
         if self.shutdown_pending:return False
         if self.server is None:
+            self._set_winmm_input_mask(self._configured_input_mask(self.port_settings))
             options={'native_client_factory':self.native_factory} if self.native_factory is not None else {}
             self.server = self.server_factory(self._receive_midi, self.engine.append_log,**options)
         ready=bool(self.server.start())
         if ready and self.native_factory is not None and self.port_router is None:
-            self.port_router=NativeMidiPorts(self.native_factory.execution,self.port_settings,self.engine.append_log)
-            self.port_router.start()
+            self._open_port_router(self.port_settings)
         return ready
 
     def stop(self) -> bool:

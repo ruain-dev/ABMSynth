@@ -22,6 +22,10 @@ DEFAULT_LOCALE = "ko-KR"
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}(?!\})")
 
 
+class MissingLocalizationKey(KeyError):
+    """The runtime catalog cannot supply a message the application needs."""
+
+
 def normalize_locale(value: str | None) -> str:
     """Normalize common Windows/POSIX locale spellings to a BCP-47 tag."""
     if not value:
@@ -112,7 +116,7 @@ def catalog_value(key: str, locale_name: str | None = None) -> str:
         value = load_catalog(candidate).get(key)
         if value is not None:
             return value
-    raise KeyError(f"Missing {PRODUCT_NAME} localization key: {key}")
+    raise MissingLocalizationKey(f"Missing {PRODUCT_NAME} localization key: {key}")
 
 
 def tr(key: str, /, **values: Any) -> str:
@@ -124,6 +128,11 @@ def tr(key: str, /, **values: Any) -> str:
         return template.format(**values)
     except (KeyError, ValueError) as exc:
         raise ValueError(f"Invalid values for localization key {key!r}: {exc}") from exc
+
+
+def dialog_action(caption: str) -> str:
+    """Label a command that opens a dialog for the next step."""
+    return tr('common.dialog_action', caption=caption)
 
 
 def placeholders(text: str) -> frozenset[str]:

@@ -2,20 +2,42 @@
 
 import os
 
+# The repair dialog must work with an absent localization catalog.
+CATALOG_REPAIR_TITLE = 'ABMSynth를 시작하지 못했습니다'
+CATALOG_REPAIR_TEXT = (
+    'ABMSynth 언어 파일이 누락됐거나 현재 버전과 일치하지 않습니다. '
+    'ABMSynth 설치 파일을 다시 실행해 복구하거나, 포터블 파일을 다시 압축 해제하세요.'
+)
+CATALOG_REPAIR_CLOSE = '닫기'
 
 def show_startup_error(error) -> None:
     """One launch-owned presentation boundary, including pre-main-window failure."""
     import sys
     import traceback
-    from i18n import tr
+    from i18n import MissingLocalizationKey, tr
     traceback.print_exception(error, file=sys.stderr)
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
-        from native_widgets import NativeMessageBox
     except ImportError:
         return  # Qt unavailable: the failure remains explicit on stderr/exit1.
     try:
         application = QApplication.instance() or QApplication(sys.argv)
+        if getattr(sys, 'frozen', False) and isinstance(error, MissingLocalizationKey):
+            from pathlib import Path
+            from PySide6.QtGui import QFont, QFontDatabase
+
+            prompt = QMessageBox(QMessageBox.Critical, CATALOG_REPAIR_TITLE, CATALOG_REPAIR_TEXT,
+                                 QMessageBox.Close)
+            prompt.button(QMessageBox.Close).setText(CATALOG_REPAIR_CLOSE)
+            # Load the font directly because normal UI imports can need the catalog.
+            font_path = Path(__file__).with_name('fonts') / 'NotoSansKR-wght400.ttf'
+            font_id = QFontDatabase.addApplicationFont(str(font_path))
+            families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+            if families:
+                prompt.setFont(QFont(families[0]))
+            prompt.exec()
+            return
+        from native_widgets import NativeMessageBox
         prompt = NativeMessageBox()
         prompt.setWindowTitle(tr('error.startup_title'))
         prompt.setIcon(QMessageBox.Critical)

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 import json
 from typing import Callable
 
-from PySide6.QtCore import QPoint, QRect, QSize, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QScrollArea, QGridLayout, QHBoxLayout, QLabel, QLayout, QSizePolicy, QStyle, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QScrollArea, QGridLayout, QHBoxLayout, QVBoxLayout, QLabel, QLayout, QSizePolicy, QStyle, QWidget
 
 
 class NativeWindowPlacement:
@@ -84,6 +84,7 @@ FORM_ROW_HEIGHT = 28
 FORM_COLUMN_GAP = 10
 COMPACT_CONTENT_GAP = 6
 CARD_GAP = 14
+INNER_CARD_GAP = 8
 TAB_PAGE_INSET = 12
 COMPACT_TAB_PAGE_INSET = 8
 CARD_ROW_GAPS = {
@@ -124,11 +125,12 @@ class WrappingControlLayout(QLayout):
     Equal cells center their group;excess width outside maximum_gap stays out.
     """
 
-    def __init__(self, parent=None, *, equal_cells=False, maximum_gap=48):
+    def __init__(self, parent=None, *, equal_cells=False, maximum_gap=48, start_aligned=False):
         super().__init__(parent)
         self._items = []
         self.equal_cells=bool(equal_cells)
-        self.maximum_gap=max(FORM_COLUMN_GAP,int(maximum_gap))
+        self.maximum_gap=None if maximum_gap is None else max(0,int(maximum_gap))
+        self.start_aligned=start_aligned
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(FORM_COLUMN_GAP)
         self.setProperty('nativeLayoutRole', 'wrapping-control-row')
@@ -166,8 +168,10 @@ class WrappingControlLayout(QLayout):
     def sizeHint(self):
         hints = [self._hint(item) for item in self._visible_items()]
         margins = self.contentsMargins()
-        return QSize(sum(h.width() for h in hints) + max(0, len(hints)-1)*self.spacing()
-                     + margins.left()+margins.right(),
+        width = (max((h.width() for h in hints), default=0)*len(hints) if self.equal_cells
+                 else sum(h.width() for h in hints))
+        width += max(0,len(hints)-1)*self.spacing()
+        return QSize(width+margins.left()+margins.right(),
                      max((h.height() for h in hints), default=0)+margins.top()+margins.bottom())
 
     def setGeometry(self, rect):
@@ -210,17 +214,64 @@ class WrappingControlLayout(QLayout):
         available=max(0,area.width());hints=[self._hint(item) for item in items]
         cell=min(available,max(h.width() for h in hints))
         count=max(1,min(len(items),(available+self.spacing())//max(1,cell+self.spacing())))
+        if count>2 and len(items)%count==1:
+            count-=1
         y=0;direction=self.parentWidget().layoutDirection() if self.parentWidget() else Qt.LeftToRight
         for start in range(0,len(items),count):
             line=items[start:start+count];n=len(line)
-            gap=min(self.maximum_gap,max(0,(available-n*cell)//(n-1))) if n>1 else 0
-            used=n*cell+max(0,n-1)*gap;x=max(0,(available-used)//2)
-            height=max(max(0,item.heightForWidth(cell) if item.hasHeightForWidth() else self._hint(item).height()) for item in line)
+            if self.maximum_gap is None:
+                gap = self.spacing()
+                pitch, remainder = divmod(available + gap, count)
+                widths = [pitch - gap + (index < remainder) for index in range(n)]
+                x = 0
+            else:
+                gap = min(self.maximum_gap, max(0, (available - n * cell) // (n - 1))) if n > 1 else 0
+                used = n * cell + max(0, n - 1) * gap
+                x = 0 if self.start_aligned else max(0, (available - used) // 2)
+                widths = [cell] * n
+            height = max(max(0, item.heightForWidth(width) if item.hasHeightForWidth() else self._hint(item).height())
+                         for item, width in zip(line, widths))
             if not measure:
-                for index,item in enumerate(line):
-                    item.setGeometry(QStyle.visualRect(direction,area,QRect(area.x()+x+index*(cell+gap),area.y()+y,cell,height)))
+                for item, width in zip(line, widths):
+                    geometry = QRect(area.x() + x, area.y() + y, width, height)
+                    item.setGeometry(QStyle.visualRect(direction, area, geometry))
+                    x += width + gap
             y+=height+self.spacing()
         return margins.top()+y-self.spacing()+margins.bottom()
+
+
+class FormRowLayout(WrappingControlLayout):
+    """Aligned caption and wrapping field, stacked when their hints do not fit."""
+
+    def sizeHint(self):
+        hints = [self._hint(item) for item in self._items]
+        return QSize(sum(h.width() for h in hints) + self.spacing(),
+                     max((h.height() for h in hints), default=0))
+
+    def _arrange(self, rect, *, measure):
+        if self.count() != 2:
+            return super()._arrange(rect, measure=measure)
+        caption, field = self._items
+        caption_hint, field_hint = self._hint(caption), self._hint(field)
+        width = max(0, rect.width())
+        stacked = width < caption_hint.width() + self.spacing() + field_hint.width()
+        caption_width = min(width, caption_hint.width())
+        field_width = width if stacked else max(0, width-caption_width-self.spacing())
+        field_height = max(0, field.heightForWidth(field_width)
+                           if field.hasHeightForWidth() else field_hint.height())
+        caption_height = max(FORM_ROW_HEIGHT, caption.heightForWidth(caption_width)
+                             if caption.hasHeightForWidth() else caption_hint.height())
+        height = (caption_height + COMPACT_CONTENT_GAP + field_height if stacked
+                  else max(caption_height, field_height))
+        if not measure:
+            direction = self.parentWidget().layoutDirection()
+            caption.setGeometry(QStyle.visualRect(direction, rect,
+                QRect(rect.x(), rect.y(), caption_width, caption_height)))
+            field.setGeometry(QStyle.visualRect(direction, rect,
+                QRect(rect.x() if stacked else rect.x()+caption_width+self.spacing(),
+                      rect.y()+caption_height+COMPACT_CONTENT_GAP if stacked else rect.y(),
+                      field_width, field_height)))
+        return height
 
 
 class ContextActionLayout(WrappingControlLayout):
@@ -257,7 +308,7 @@ class ContextActionLayout(WrappingControlLayout):
         stacked=width<self.preferred_context_width+action_width+self.spacing()
         context_width=width if stacked else max(0,width-action_width-self.spacing())
         context_height=max(0,context.heightForWidth(context_width) if context.hasHeightForWidth() else self._hint(context).height())
-        action_height=max(0,action_hint.height())
+        action_height=max(0,actions.heightForWidth(action_width) if actions.hasHeightForWidth() else action_hint.height())
         height=context_height+COMPACT_CONTENT_GAP+action_height if stacked else max(context_height,action_height)
         if not measure:
             direction=self.parentWidget().layoutDirection() if self.parentWidget() else Qt.LeftToRight
@@ -302,17 +353,75 @@ def control_grid_layout(parent=None):
     return grid
 
 
+class PeerCardGridLayout(QGridLayout):
+    """Peer shells fill each row. Content layouts own their top alignment."""
+
+    def addWidget(self, widget, row, column, *placement):
+        placement = list(placement)
+        if placement and isinstance(placement[-1], Qt.AlignmentFlag):
+            placement[-1] &= ~Qt.AlignVertical_Mask
+        policy = widget.sizePolicy()
+        if policy.verticalPolicy() in (QSizePolicy.Maximum, QSizePolicy.Preferred):
+            policy.setVerticalPolicy(QSizePolicy.Minimum)
+            widget.setSizePolicy(policy)
+        super().addWidget(widget, row, column, *placement)
+
+    def setGeometry(self, rect):
+        headers = {}
+        for index in range(self.count()):
+            item = self.itemAt(index)
+            widget = item.widget()
+            row, _column, row_span, _column_span = self.getItemPosition(index)
+            header = getattr(widget, 'header', None)
+            if row_span == 1 and header is not None and header.layout() is not None:
+                headers.setdefault(row, []).append(header)
+        for row_headers in headers.values():
+            height = max(header.layout().totalSizeHint().height() for header in row_headers)
+            for header in row_headers:
+                if header.minimumHeight() != height or header.maximumHeight() != height:
+                    header.setFixedHeight(height)
+        super().setGeometry(rect)
+
+
 def card_grid_layout(parent=None):
-    """Peer card borders share one gap on both axes,not compact form spacing."""
-    grid=set_layout(QGridLayout(parent),0,CARD_GAP)
+    """Peer cards inside a bordered group share one compact gap on both axes."""
+    grid=set_layout(PeerCardGridLayout(parent),0,INNER_CARD_GAP)
     grid.setProperty('nativeLayoutRole','card-grid')
     return grid
+
+
+class PeerCardStackLayout(QVBoxLayout):
+    """Keep the painted peer gap exact when Qt distributes residual height."""
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        top = self.contentsRect().top()
+        for index in range(self.count()):
+            item = self.itemAt(index)
+            if item.isEmpty():
+                continue
+            geometry = item.geometry()
+            if geometry.top() != top:
+                geometry.moveTop(top)
+                item.setGeometry(geometry)
+            top = item.geometry().bottom() + 1 + self.spacing()
+
+
+def card_stack_layout(parent=None, *, margins=0):
+    """Stack peer cards or card grids with the same gap used inside a grid."""
+    stack = set_layout(PeerCardStackLayout(parent), margins, INNER_CARD_GAP)
+    stack.setAlignment(Qt.AlignTop)
+    stack.setProperty('nativeLayoutRole', 'card-stack')
+    return stack
 
 
 def make_horizontally_elastic(widget: QWidget, vertical=QSizePolicy.Fixed) -> QWidget:
     """Keep a normal preferred size while allowing width to compress to 0px."""
     widget.setMinimumWidth(0)
-    widget.setSizePolicy(QSizePolicy.Ignored, vertical)
+    policy = widget.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Ignored)
+    policy.setVerticalPolicy(vertical)
+    widget.setSizePolicy(policy)
     return widget
 
 
@@ -335,8 +444,7 @@ def install_three_column_form_row(
     """
     layout = set_layout(QGridLayout(host), (0, 0, 0, 0), gap)
     layout.setColumnStretch(1, 1)
-    label = FormCaptionLabel(caption, preferred_width=label_width)
-    label.setObjectName("FieldLabel")
+    label = FormCaptionLabel(caption, field, preferred_width=label_width)
     label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     make_horizontally_elastic(field)
     if stacked:
@@ -353,15 +461,26 @@ def install_three_column_form_row(
 
 
 def reflow_card_columns(card,columns,preferred_widths,*,force_stack=False,start_row=1):
-    """Shared title-row grid reflow;preferred widths never become minima."""
+    """Balance columns while their contents fit, then stack without a width floor."""
     layout=card.layout();margins=layout.contentsMargins()
-    available=max(0,card.width()-margins.left()-margins.right())
-    stacked=force_stack or available<sum(preferred_widths)+max(0,len(columns)-1)*layout.horizontalSpacing()
+    gaps=max(0,len(columns)-1)*layout.horizontalSpacing()
+    available=max(0,card.width()-margins.left()-margins.right()-gaps)
+    stacked=force_stack or available<sum(preferred_widths)
     if card.property('settingsStacked')!=stacked:
         card.setProperty('settingsStacked',stacked)
         for i,column in enumerate(columns):
             layout.removeWidget(column);layout.addWidget(column,i+start_row if stacked else start_row,0 if stacked else i,Qt.AlignTop)
-    for i,width in enumerate(preferred_widths):layout.setColumnStretch(i,(1 if i==0 else 0) if stacked else max(1,int(width)))
+    if stacked:
+        stretches=[1]+[0]*(len(columns)-1)
+    else:
+        stretches=list(preferred_widths)
+        # Reserve space for the longest columns first. Divide the rest evenly.
+        widest_first=sorted(range(len(columns)),key=preferred_widths.__getitem__,reverse=True)
+        for remaining,index in zip(range(len(columns),0,-1),widest_first):
+            stretches[index]=max(preferred_widths[index],available//remaining)
+            available-=stretches[index]
+    for i,stretch in enumerate(stretches):
+        layout.setColumnStretch(i,stretch)
     return stacked
 
 
@@ -395,12 +514,36 @@ class FormCaptionLabel(ElasticLabel):
     QLabel invalidates its layout hint on font/text/style changes.
     """
 
+    def __init__(self, text, field, *, preferred_width=0):
+        super().__init__(text, preferred_width=preferred_width)
+        self.setObjectName('FieldLabel')
+        bind_field_enabled(field, self)
+
     def sizeHint(self):
         hint = super().sizeHint()
         metrics = self.fontMetrics()
         natural = max((max(metrics.horizontalAdvance(line), metrics.boundingRect(line).width())
                        for line in self.text().splitlines()), default=0)
         return QSize(max(hint.width(), natural + 2), hint.height())
+
+
+class _FieldEnabledBinding(QObject):
+    def __init__(self, field, widget):
+        super().__init__(widget)
+        self._widget = widget
+        field.installEventFilter(self)
+        widget.setEnabled(field.isEnabled())
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.EnabledChange:
+            self._widget.setEnabled(watched.isEnabled())
+        return super().eventFilter(watched, event)
+
+
+def bind_field_enabled(field, *widgets):
+    """Propagate the effective field state to its sibling caption or readout."""
+    for widget in widgets:
+        _FieldEnabledBinding(field, widget)
 
 
 def align_form_labels(labels, preferred_width, gap=0):
@@ -514,7 +657,7 @@ def reveal_expanded_region(widget, preview_height=56):
     area.horizontalScrollBar().setValue(horizontal)
 
 
-def automatic_window_fit_allowed(window):
+def automatic_window_fit_allowed(window, *, opening=False):
     """Opening convenience yields to chosen geometry,window state and scroll.
 
     The native WM_SIZING/SC_SIZE boundary records a real user gesture. A Qt
@@ -525,7 +668,9 @@ def automatic_window_fit_allowed(window):
     if window.property('nativeUserGeometryChosen') or window.windowState():return False
     dpi_guard=getattr(window,'_native_dpi_size_guard',None)
     if dpi_guard is not None and dpi_guard._target is not None:return False
-    return not any(area.window() is window and area.isVisible() and
+    # The provisional layout can set a scrollbar before a dialog opens.
+    # Only keep a scroll position from an already presented window.
+    return opening or not any(area.window() is window and area.isVisible() and
                    (area.verticalScrollBar().value()>0 or area.horizontalScrollBar().value()>0)
                    for area in window.findChildren(QAbstractScrollArea))
 
@@ -536,7 +681,7 @@ def fit_plain_dialog_contents(dialog, preferred_width=None, *, opening=False, gr
     Explicit content/opening calls only, never a per-frame resize loop. HFW
     includes wrapped task text; preferred width remains a hint, not a floor.
     """
-    if not automatic_window_fit_allowed(dialog):return dialog.size()
+    if not automatic_window_fit_allowed(dialog, opening=opening):return dialog.size()
     dialog.ensurePolished()
     root=dialog.layout()
     if root is None: return dialog.size()

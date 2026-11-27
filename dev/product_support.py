@@ -40,10 +40,18 @@ def atomic_write(destination, data):
 
 
 def version_key(value):
-    match = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', value)
+    match = re.fullmatch(r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+        r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?', value)
     if match is None:
         raise ValueError(tr('support.invalid_version'))
-    return tuple(int(part) for part in match.groups())
+    prerelease = match[4]
+    parts = prerelease.split('.') if prerelease else ()
+    if any(part.isdigit() and len(part) > 1 and part.startswith('0') for part in parts):
+        raise ValueError(tr('support.invalid_version'))
+    # SemVer: a release sorts after its prereleases. Numeric identifiers sort
+    # before textual identifiers. The first three values remain PE components.
+    return (*(int(match[index]) for index in (1, 2, 3)), int(prerelease is None),
+            tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts))
 
 
 def project_link(value):
@@ -66,7 +74,7 @@ def check_release():
     tag = record['tag_name']
     version_key(tag)
     base = 'https://github.com/ruain-dev/ABMSynth/releases/'
-    if (record.get('draft') or record.get('prerelease')
+    if (record.get('draft') or record.get('prerelease') or '-' in tag
             or record['html_url'] != base + 'tag/' + quote(tag, safe='')):
         raise ValueError(tr('support.release_invalid'))
     assets = {}
@@ -126,9 +134,12 @@ def validate_backup(raw):
     text = record['ini']
     if (len(text.encode('utf-8')) > INI_MAX_BYTES
             or any(len(line) > INI_MAX_LINE for line in text.splitlines())
-            or not isinstance(record.get('version'), str)
-            or re.fullmatch(r'\d+\.\d+\.\d+', record['version']) is None):
+            or not isinstance(record.get('version'), str)):
         raise ValueError(tr('support.backup_invalid'))
+    try:
+        version_key(record['version'])
+    except ValueError:
+        raise ValueError(tr('support.backup_invalid')) from None
     parser = ConfigParser(interpolation=None, strict=True)
     try:
         parser.read_string(text)

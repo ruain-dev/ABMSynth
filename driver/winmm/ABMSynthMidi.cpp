@@ -290,10 +290,8 @@ bool DefaultRoutingEnabled()
 #endif
 bool IsABMSynthRunning()
 {
-    // Returning zero devices while no server instance exists makes this
-    // registered WinMM driver disappear from fresh device enumeration. This
-    // keeps the endpoint app-scoped without modifying protected registry keys
-    // or requiring elevation whenever ABMSynth starts or exits.
+    // Receiver availability governs opening/sending, not installed-device
+    // enumeration. Windows also queries devices before the user app starts.
     // 0 means server DEFAULT timeout, not polling. Bound host enumeration and
     // pre-connection admission even when all receiver instances are busy.
     return WaitNamedPipeW(kPipeName, 1) != FALSE;
@@ -777,7 +775,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI modMessage(
     switch (message)
     {
     case MODM_GETNUMDEVS:
-        return IsABMSynthRunning() ? PortCount(false) : 0;
+        return PortCount(false);
 
     case MODM_GETDEVCAPS:
         return FillCapabilities(param1, param2,PortAddress(false,deviceId));

@@ -160,6 +160,25 @@ def configure_taskbar_identity():
     _taskbar_identity_set = True
 
 
+def set_window_topmost(hwnd, enabled):
+    """WinUser SetWindowPos changes stacking without moving or activating."""
+    if os.name != 'nt':return
+    user=ctypes.WinDLL('user32',use_last_error=True)
+    pid=ctypes.c_ulong()
+    query=user.GetWindowThreadProcessId
+    query.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_ulong)]
+    query.restype=ctypes.c_ulong
+    if not query(hwnd,ctypes.byref(pid)) or pid.value!=os.getpid():
+        from i18n import tr
+        raise OSError(tr('runtime.taskbar_window_invalid'))
+    setter=user.SetWindowPos
+    setter.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_uint]
+    setter.restype=ctypes.c_int
+    # SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOOWNERZORDER.
+    if not setter(hwnd,-1 if enabled else -2,0,0,0,0,0x1|0x2|0x10|0x200):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def expose_taskbar_window(hwnd):
     """WinUser.h:expose this process's owned HWND without changing GW_OWNER.
 
@@ -525,6 +544,37 @@ def midi_driver_routing_contract(root=None):
     except (OSError,ValueError,KeyError,TypeError):return None
 
 
+def midi_mapper_persistent_aliases():
+    """MEDIA software registrations used to rebuild legacy MIDI slots."""
+    import winreg
+    device_root=r'SYSTEM\CurrentControlSet\Enum\ROOT\MEDIA'
+    media_class='{4d36e96c-e325-11ce-bfc1-08002be10318}'
+    aliases=[]
+    try:parent=winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,device_root,0,winreg.KEY_READ)
+    except FileNotFoundError:return ()
+    with parent:
+        for index in range(winreg.QueryInfoKey(parent)[0]):
+            name=winreg.EnumKey(parent,index)
+            try:
+                with winreg.OpenKey(parent,name,0,winreg.KEY_READ) as device:
+                    hardware=winreg.QueryValueEx(device,'HardwareID')[0]
+                    flags=winreg.QueryValueEx(device,'ConfigFlags')[0]
+                    software=winreg.QueryValueEx(device,'Driver')[0]
+                    if (not isinstance(hardware,list) or
+                            not any(str(value).casefold()==r'root\abmsynthmidi' for value in hardware) or
+                            not isinstance(flags,int) or flags&0x804!=0x804 or
+                            not isinstance(software,str) or
+                            not software.casefold().startswith(media_class+'\\') or
+                            not software[len(media_class)+1:].isdigit()):continue
+                path='SYSTEM\\CurrentControlSet\\Control\\Class\\'+software+r'\Drivers\midi\ABMSynthMapper.drv'
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,path,0,winreg.KEY_READ) as key:
+                    driver=winreg.QueryValueEx(key,'Driver')[0]
+                    alias=winreg.QueryValueEx(key,'Alias')[0]
+                    if str(driver).casefold()=='abmsynthmapper.drv' and isinstance(alias,str):aliases.append(alias.casefold())
+            except FileNotFoundError:continue
+    return tuple(aliases)
+
+
 def midi_mapper_status():
     """Read registration/owned file state only;never open a MIDI endpoint.
 
@@ -546,6 +596,7 @@ def midi_mapper_status():
         except FileNotFoundError:return {}
     rows=[];api_mode='unknown';enabled=None
     try:
+        persistent_aliases=midi_mapper_persistent_aliases()
         enabled=bool(values(winreg.HKEY_CURRENT_USER,r'Software\ABMSynth\MIDIMapper',('Enabled',),winreg.KEY_WOW64_64KEY).get('Enabled',1))
         for arch,view,directory in (('x64',winreg.KEY_WOW64_64KEY,'System32'),('x86',winreg.KEY_WOW64_32KEY,'SysWOW64')):
             registrations=values(winreg.HKEY_LOCAL_MACHINE,r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32',
@@ -571,15 +622,16 @@ def midi_mapper_status():
                 elif registered and current is None:state='conflict'
                 elif not exists:state='missing_file'
                 elif hashlib.sha256(file.read_bytes()).hexdigest().casefold()!=digest.casefold():state='changed_file'
-                else:state='ready' if registered else 'missing_registration'
+                elif not registered:state='missing_registration'
+                else:state='ready' if slot in persistent_aliases else 'missing_persistence'
             elif exists or registered or owner:state='unverified'
             rows.append(dict(architecture=arch,state=state,sha256=owner['SHA256'].casefold() if owned else None))
     except OSError:
         return dict(architectures=tuple(rows),state='unreadable',action=None,requested_action=None,
                     api_mode=api_mode,routing_restriction=None,enabled=enabled)
     states={row['state'] for row in rows}
-    state=next((s for s in ('conflict','changed_file','unverified','missing_file','missing_registration','absent') if s in states),'ready')
-    action=('Uninstall' if state=='ready' else 'Repair' if states<={'ready','missing_file','missing_registration'}
+    state=next((s for s in ('conflict','changed_file','unverified','missing_file','missing_registration','missing_persistence','absent') if s in states),'ready')
+    action=('Uninstall' if state=='ready' else 'Repair' if states<={'ready','missing_file','missing_registration','missing_persistence'}
             else 'Install' if states<={'ready','absent'} else None)
     requested_action=action
     contract=midi_driver_routing_contract()
@@ -589,7 +641,7 @@ def midi_mapper_status():
     # Microsoft issue1062 describes SDK correlation,not failed WinMM default
     # delivery. The v2 package honors the requested route with that caveat.
     if restriction=='unqualified' and action!='Uninstall':action=None
-    if modern and contract and state in ('ready','missing_file','missing_registration') and any(row['sha256']!=contract['sha256'][row['architecture']] for row in rows):
+    if contract and state in ('ready','missing_file','missing_registration','missing_persistence') and any(row['sha256']!=contract['sha256'][row['architecture']] for row in rows):
         action=requested_action='Update'
     return dict(architectures=tuple(rows),state=state,action=action,
                 requested_action=requested_action,api_mode=api_mode,

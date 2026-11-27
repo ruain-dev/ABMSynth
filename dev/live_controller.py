@@ -228,7 +228,7 @@ class LiveController:
         was_blocked = self.delay_type.blockSignals(True)
         self._preset_programmatic = True
         try:
-            self.delay_type.setCurrentIndex(delay_type)
+            self.delay_type.setValue(delay_type)
             self.delay_level.set(level, False)
             self.delay_time.set(time_ms, False)
             self.delay_feedback.set(feedback, False)
@@ -275,11 +275,15 @@ class LiveController:
                 )
             if updated.auto_reset_delay_s != previous.auto_reset_delay_s:
                 ae.configure_auto_reset(updated.auto_reset_delay_s)
+            if updated.nwc_reset_action != previous.nwc_reset_action:
+                self.midi_input_runtime.configure_nwc_reset(updated.nwc_reset_action)
             self._engine_preferences = updated
         if changed.intersection(('main_log_detail','main_log_level')):
             self._sync_main_log_display()
         if changed.intersection(('minimize_to_tray', 'close_to_tray')):
             self._sync_tray_preferences()
+        if 'always_on_top' in changed:
+            self._sync_always_on_top()
 
     @contextmanager
     def _soundfont_scalar_scope(self):
@@ -346,6 +350,27 @@ class LiveController:
             if locks:return False,locks
             return bool(factory.release_source_edit_owner()),()
 
+    def apply_midi_port_settings(self, settings):
+        from midi_input_runtime import publish_midi_port_names
+
+        def prepare(port_settings):
+            port=max(row['slot'] for row in port_settings.ports)
+            if not ae.runtime.stream_handle:
+                return
+            if (port+1)*16>ae.runtime.addresses.count:
+                with self._soundfont_commit_scope():
+                    ae.ensure_midi_port(port, remember=False)
+
+        def silence(ports):
+            if ae.runtime.stream_handle:
+                channels=tuple(port*16+channel for port in sorted(ports) for channel in range(16)
+                               if port*16+channel<ae.runtime.addresses.count)
+                if channels:
+                    ae.silence_channel_notes(channels)
+
+        publish=(lambda _:None) if os.environ.get(ENV_UI_ONLY) else publish_midi_port_names
+        self.midi_input_runtime.apply_port_settings(settings,publish=publish,prepare=prepare,silence=silence)
+
     def selected_output_device(self):
         """Return the BASS device ID, never an index into filtered UI rows."""
         device = self.device_combo.currentData()
@@ -387,7 +412,7 @@ class LiveController:
         self.apply_effect_state()
         # Start with the same complete Reset policy as the Reset command,
         # before accepting MIDI input or starting the physical output.
-        ae.ensure_midi_port(max(row['slot'] for row in self.midi_input_runtime.port_settings.ports))
+        ae.ensure_midi_port(max(row['slot'] for row in self.midi_input_runtime.port_settings.ports),remember=False)
         from midi_input_runtime import publish_midi_port_names
         if not os.environ.get('ABMSYNTH_UI_ONLY'):
             publish_midi_port_names(self.midi_input_runtime.port_settings)
@@ -399,6 +424,7 @@ class LiveController:
                 factory=self.native_session_builder(self.midi_input_runtime,self.soundfont_runtime)
             else:factory=None
             if factory is not None:
+                self.midi_input_runtime.configure_nwc_reset(preferences.nwc_reset_action)
                 self.midi_input_runtime.bind_native_factory(factory)
                 self.effect_events.bind_ordered_commands(ae.runtime.submit_engine_events,self._engine_effect_completed,
                     macro_submitter=ae.runtime.submit_engine_macro,batch_submitter=ae.runtime.submit_engine_batch)

@@ -988,6 +988,8 @@ class AudioSession:
             ("voices", self.bass.BASS_ChannelSetAttribute, (self.stream, BASS_ATTRIB_MIDI_VOICES)),
             ("midi_cpu_limit", self.bass.BASS_ChannelSetAttribute, (self.stream, BASS_ATTRIB_MIDI_CPU)),
         )
+        if self.asio_device is None and self.wasapi_device is None:
+            operations += (("shared_update_ms", self.bass.BASS_SetConfig, (BASS_CONFIG_UPDATEPERIOD,)),)
         applied = []
         for name, setter, args in operations:
             value, old = getattr(preferences, name), getattr(previous, name)
@@ -1905,6 +1907,7 @@ class PlaybackLampPulse:
 
 class PlaybackWarningEvidence:
     """One detection policy for lamps/logs; no Qt, callbacks or file I/O."""
+    MAGNITUDE_STATES=frozenset(('overload','timing'))
     COUNTERS=(("source_stalls","stalled"),("output_short_bytes","supply"),
         ("output_errors","supply"),("output_late_blocks","deadline"),
         ("source_late_fx_blocks","deadline"),("output_callback_gaps","dispatch"),
@@ -1925,7 +1928,7 @@ class PlaybackWarningEvidence:
         events={};details={}
         states={'stalled':int(bool(values.get('output_stalled'))),'clip':int(clip),
             'dispatch':int(values.get('output_progress_excess_ms',0)>0),
-            'timing':int(values.get('note_timing_excess_ms',0)>0)}
+            'timing':int(values.get('note_timing_level',0))}
         for field,key in self.COUNTERS:
             count=values.get(field+'_incidents',values.get(field))
             if count is None:continue
@@ -1992,7 +1995,7 @@ class PlaybackWarningLog:
             for key in ('dispatch','supply','deadline','overload','stalled'):
                 level=states.get(key,0);prior=self.states.get(key,0)
                 pulse=self.pulses[key]
-                pulse.set_condition(level,now,magnitude=key=='overload')
+                pulse.set_condition(level,now,magnitude=key in PlaybackWarningEvidence.MAGNITUDE_STATES)
                 if not level:
                     for _ in range(min(2,events.get(key,0))):pulse.trigger(now)
                 if key in evidence or level>prior:
@@ -2095,6 +2098,8 @@ class EngineObservation:
 
 class AudioTelemetry:
     """Query BASS/BASSMIDI status and the engine's output snapshots."""
+
+    _MONITOR_VERIFY_INTERVAL = .25
 
     # Only metadata validated for this live output can survive a delayed poll.
     # Everything else (note statistics, health samples, live queue) expires.
@@ -2356,6 +2361,7 @@ class AudioTelemetry:
         return snapshot[2]
 
     def _observe(self):
+        monitor_cache = None
         while True:
             with self._condition:
                 self._condition.wait_for(lambda: self._stopping or self._pending is not None)
@@ -2389,10 +2395,17 @@ class AudioTelemetry:
                     continue  # Never present a partial manual transaction.
                 self._collect_chord(stamp)
                 self._collect_tempo(stamp)
+                monitor_key = (stamp, epoch, display_epoch, channels)
+                # Reuse only a completed, coherent mixer sweep. Keep a short
+                # readback interval for changes that bypass the revision fence.
+                reuse_monitor = (channels and not epoch[1] and monitor_cache is not None
+                                 and monitor_key == monitor_cache[0] and started < monitor_cache[1])
                 with self._owner_scope():
                     qualified=getattr(self.engine,'channel_control_display_readback',None) or getattr(self.engine,'channel_control_readback',None)
                     scoped = getattr(self.engine, 'channel_monitor_snapshot_scoped', None)
-                    if channels and callable(scoped):
+                    if reuse_monitor:
+                        rows = monitor_cache[2]
+                    elif channels and callable(scoped):
                         rows = MappingProxyType({channel: MappingProxyType(dict(row)) for channel, row in
                             scoped(channels, **({'with_readbacks':True} if qualified is not None else {})).items()})
                     else:
@@ -2418,7 +2431,14 @@ class AudioTelemetry:
                 frame = EngineObservation(stamp, channels, fields, rows, values, status,
                                           time.monotonic(), time.monotonic() - started,readbacks,self._performance_cache,field_channels,True,display_epoch)
                 strict_epoch = self._read_epoch()
+                if (not reuse_monitor and channels and callable(scoped)
+                        and callable(getattr(self.engine, 'observation_read_epoch', None))
+                        and epoch == strict_epoch and not epoch[1] and self._stamp() == stamp
+                        and self._display_epoch() == display_epoch
+                        and all(result.known for row in rows.values() for result in row.get('_readbacks',{}).values())):
+                    monitor_cache = monitor_key, started + self._MONITOR_VERIFY_INTERVAL, rows
             except Exception as exc:
+                monitor_cache = None
                 self.chord_tracker.reset()
                 self.tempo_analysis.observe_notes(None,time.perf_counter())
                 with self._condition:

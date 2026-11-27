@@ -68,7 +68,7 @@ struct MidiInputEndpoint {
 };
 }
 extern "C" __declspec(dllexport) DWORD WINAPI midMessage(UINT deviceId,UINT message,DWORD_PTR user,DWORD_PTR one,DWORD_PTR two){
-    if(message==MIDM_GETNUMDEVS)return IsABMSynthRunning()?PortCount(true):0;
+    if(message==MIDM_GETNUMDEVS)return PortCount(true);
     auto* input=reinterpret_cast<MidiInputEndpoint*>(user);
     if(message==MIDM_GETDEVCAPS){
         if(!one||deviceId>=PortCount(true))return MMSYSERR_BADDEVICEID;

@@ -142,7 +142,7 @@ function ConvertTo-OwnedMapperBackup($Entries) {
     # selected properties. Convert each entry first, or every backup field
     # silently becomes null even though the live transaction has real values.
     $Entries | ForEach-Object {[pscustomobject]$_} |
-        Select-Object arch,slot,subkey,view,target,source,backupFile,retired,before,after,slotBackup,originalSlot,slotBefore,backupBefore,hashBefore
+        Select-Object arch,slot,subkey,view,target,source,backupFile,retired,before,after,slotBackup,originalSlot,slotBefore,backupBefore,hashBefore,priorSlotMigration
 }
 function Restore-MapperValue($Key,[string]$Name,$Snapshot) {
     if ($Snapshot.exists) {$Key.SetValue($Name,$Snapshot.value,$Snapshot.kind)}
@@ -189,11 +189,155 @@ function Set-OwnedMapperFile([string]$Source,[string]$Target,[string]$Before,[st
         if (Test-Path -LiteralPath $stage) {Remove-Item -LiteralPath $stage}
     }
 }
-function Invoke-OwnedMapperTransaction([object[]]$Entries,[string]$Mode,[string]$DriverName) {
+function Initialize-OwnedMapperDeviceType {
+    if('ABMSynthMapperDevice' -as [type]){return}
+    # SetupAPI creates an owned MEDIA device/software key. Drivers32 alone
+    # is an enumeration cache and can be rebuilt by AudioEndpointBuilder.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+public sealed class ABMSynthMapperDevice : IDisposable {
+    [StructLayout(LayoutKind.Sequential)] struct DeviceInfo {
+        public int Size; public Guid Class; public uint DevInst; public UIntPtr Reserved;
+    }
+    [DllImport("setupapi.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr SetupDiGetClassDevsW(ref Guid c,string e,IntPtr w,uint f);
+    [DllImport("setupapi.dll",SetLastError=true)] static extern bool SetupDiEnumDeviceInfo(IntPtr h,uint i,ref DeviceInfo d);
+    [DllImport("setupapi.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool SetupDiGetDeviceRegistryPropertyW(IntPtr h,ref DeviceInfo d,uint p,out uint t,byte[] b,uint n,out uint r);
+    [DllImport("setupapi.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool SetupDiSetDeviceRegistryPropertyW(IntPtr h,ref DeviceInfo d,uint p,byte[] b,uint n);
+    [DllImport("setupapi.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool SetupDiCreateDeviceInfoW(IntPtr h,string n,ref Guid c,string text,IntPtr w,uint f,ref DeviceInfo d);
+    [DllImport("setupapi.dll",SetLastError=true)] static extern bool SetupDiCallClassInstaller(uint f,IntPtr h,ref DeviceInfo d);
+    [DllImport("setupapi.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr SetupDiCreateDevRegKeyW(IntPtr h,ref DeviceInfo d,uint s,uint profile,uint type,IntPtr inf,string section);
+    [DllImport("setupapi.dll",SetLastError=true)] static extern bool SetupDiDestroyDeviceInfoList(IntPtr h);
+    static readonly Guid Media=new Guid("4d36e96c-e325-11ce-bfc1-08002be10318");
+    const string Hardware="ROOT\\ABMSynthMIDI";
+    const string Driver="ABMSynthMapper.drv";
+    IntPtr set; DeviceInfo device; RegistryKey software;
+    bool created,committed;
+    readonly List<Tuple<uint,byte[]>> propertiesBefore=new List<Tuple<uint,byte[]>>();
+    readonly List<Tuple<string,string,object,RegistryValueKind>> before=new List<Tuple<string,string,object,RegistryValueKind>>();
+    readonly List<string> createdKeys=new List<string>();
+    public string Alias {get {using(var k=software.OpenSubKey("Drivers\\midi\\"+Driver))return k==null?null:k.GetValue("Alias") as string;}}
+    public string SoftwareKey {get {return software.Name;}}
+    public static ABMSynthMapperDevice Open(bool create) {
+        var value=new ABMSynthMapperDevice();
+        try {if(!value.Initialize(create)){value.Dispose();return null;}return value;}
+        catch {value.Dispose();throw;}
+    }
+    string Property(uint field) {
+        uint type,required;var bytes=new byte[4096];
+        if(!SetupDiGetDeviceRegistryPropertyW(set,ref device,field,out type,bytes,(uint)bytes.Length,out required)){
+            int error=Marshal.GetLastWin32Error();if(error==13)return null;throw new Win32Exception(error);
+        }
+        return Encoding.Unicode.GetString(bytes,0,(int)required).TrimEnd('\0');
+    }
+    void SetProperty(uint field,byte[] value) {
+        uint type,required;byte[] buffer=new byte[4096];byte[] old=null;
+        if(SetupDiGetDeviceRegistryPropertyW(set,ref device,field,out type,buffer,(uint)buffer.Length,out required)){
+            old=new byte[required];Array.Copy(buffer,old,(int)required);
+        }else{int error=Marshal.GetLastWin32Error();if(error!=13)throw new Win32Exception(error);}
+        propertiesBefore.Add(Tuple.Create(field,old));
+        if(!SetupDiSetDeviceRegistryPropertyW(set,ref device,field,value,(uint)value.Length))throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    bool Initialize(bool create) {
+        var cls=Media;set=SetupDiGetClassDevsW(ref cls,null,IntPtr.Zero,0);
+        if(set==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error());
+        bool found=false;
+        for(uint i=0;;i++){
+            device=new DeviceInfo();device.Size=Marshal.SizeOf(typeof(DeviceInfo));
+            if(!SetupDiEnumDeviceInfo(set,i,ref device)){
+                int error=Marshal.GetLastWin32Error();if(error!=259)throw new Win32Exception(error);break;
+            }
+            var ids=Property(1);
+            if(ids!=null && Array.Exists(ids.Split('\0'),s=>String.Equals(s,Hardware,StringComparison.OrdinalIgnoreCase))){found=true;break;}
+        }
+        if(!found){
+            if(!create)return false;
+            device=new DeviceInfo();device.Size=Marshal.SizeOf(typeof(DeviceInfo));
+            if(!SetupDiCreateDeviceInfoW(set,"MEDIA",ref cls,"ABMSynth MIDI",IntPtr.Zero,1,ref device))throw new Win32Exception(Marshal.GetLastWin32Error());
+            byte[] ids=Encoding.Unicode.GetBytes(Hardware+"\0\0");
+            if(!SetupDiSetDeviceRegistryPropertyW(set,ref device,1,ids,(uint)ids.Length) ||
+               !SetupDiCallClassInstaller(0x19,set,ref device))throw new Win32Exception(Marshal.GetLastWin32Error());
+            created=true;
+        }
+        IntPtr key=SetupDiCreateDevRegKeyW(set,ref device,1,0,2,IntPtr.Zero,null);
+        if(key==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error());
+        software=RegistryKey.FromHandle(new SafeRegistryHandle(key,true));
+        using(var k=software.OpenSubKey("Drivers\\midi\\"+Driver)){
+            if(k!=null && !String.Equals(k.GetValue("Driver") as string,Driver,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Owned MEDIA driver identity changed.");
+        }
+        return true;
+    }
+    void Write(string path,string name,string value) {
+        string prefix="";
+        foreach(string part in path.Split(new[]{'\\'},StringSplitOptions.RemoveEmptyEntries)){
+            prefix=prefix.Length==0?part:prefix+"\\"+part;
+            using(var existing=software.OpenSubKey(prefix)){
+                if(existing==null && !createdKeys.Contains(prefix))createdKeys.Add(prefix);
+            }
+        }
+        using(var k=path.Length==0?software.OpenSubKey("",true):software.CreateSubKey(path)){
+            object old=k.GetValue(name,null,RegistryValueOptions.DoNotExpandEnvironmentNames);
+            before.Add(Tuple.Create(path,name,old,old==null?RegistryValueKind.String:k.GetValueKind(name)));
+            if(value==null)k.DeleteValue(name,false);else k.SetValue(name,value,RegistryValueKind.String);
+        }
+    }
+    public void Configure(string alias,bool remove) {
+        if(!remove){
+            // Manual legacy MEDIA devices must keep their software key when
+            // PnP revisits driverless root devices on the next boot.
+            SetProperty(10,BitConverter.GetBytes(0x00000804u));
+            SetProperty(11,Encoding.Unicode.GetBytes("ruain\0"));
+        }
+        Write("","DriverDesc",remove?null:"ABMSynth MIDI");
+        Write("","ProviderName",remove?null:"ruain");
+        Write("Drivers","SubClasses",remove?null:"midi");
+        string path="Drivers\\midi\\"+Driver;
+        Write(path,"Driver",remove?null:Driver);
+        Write(path,"Description",remove?null:"ABMSynth MIDI");
+        Write(path,"Alias",remove?null:alias);
+    }
+    public void Rollback() {
+        for(int i=before.Count-1;i>=0;i--){var entry=before[i];using(var k=entry.Item1.Length==0?software.OpenSubKey("",true):software.CreateSubKey(entry.Item1)){
+            if(entry.Item3==null)k.DeleteValue(entry.Item2,false);else k.SetValue(entry.Item2,entry.Item3,entry.Item4);
+        }}
+        before.Clear();
+        for(int i=createdKeys.Count-1;i>=0;i--){using(var k=software.OpenSubKey(createdKeys[i])){
+            if(k!=null && k.ValueCount==0 && k.SubKeyCount==0)software.DeleteSubKey(createdKeys[i],false);
+        }}
+        createdKeys.Clear();
+        for(int i=propertiesBefore.Count-1;i>=0;i--){var entry=propertiesBefore[i];
+            if(!SetupDiSetDeviceRegistryPropertyW(set,ref device,entry.Item1,entry.Item2,entry.Item2==null?0u:(uint)entry.Item2.Length))throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        propertiesBefore.Clear();
+    }
+    public void Commit(bool remove) {
+        if(remove && !SetupDiCallClassInstaller(5,set,ref device))throw new Win32Exception(Marshal.GetLastWin32Error());
+        committed=true;
+    }
+    public void Dispose() {
+        try {if(!committed){if(software!=null)Rollback();if(created)SetupDiCallClassInstaller(5,set,ref device);}}
+        finally {if(software!=null){software.Close();software=null;}if(set!=IntPtr.Zero && set!=new IntPtr(-1)){SetupDiDestroyDeviceInfoList(set);set=IntPtr.Zero;}}
+    }
+}
+'@
+}
+
+function Invoke-OwnedMapperTransaction([object[]]$Entries,[string]$Mode,[string]$DriverName,$Device=$null) {
     $attempted=@()
     try {
+        if($Device){$Device.Configure($Entries[0].slot,($Mode -eq 'Uninstall'))}
         foreach ($entry in $Entries) {
             $attempted+=$entry
+            if($entry.priorSlotMigration){
+                $migration=$entry.priorSlotMigration
+                if(-not (Test-MapperValueSnapshot (Get-MapperValueSnapshot $entry.key $migration.slot) $migration.before)){throw 'Prior owned slot changed before migration.'}
+                Restore-MapperValue $entry.key $migration.slot $migration.after
+            }
             if (-not (Test-MapperValueSnapshot (Get-MapperValueSnapshot $entry.key $entry.slot) $entry.slotBefore)) {throw 'Driver slot changed before operation.'}
             if ($Mode -eq 'Uninstall') {
                 Restore-MapperValue $entry.key $entry.slot $entry.originalSlot
@@ -220,8 +364,10 @@ function Invoke-OwnedMapperTransaction([object[]]$Entries,[string]$Mode,[string]
                 $entry.state.SetValue('SHA256',$entry.after,[Microsoft.Win32.RegistryValueKind]::String)
             }
         }
+        if($Device){$Device.Commit(($Mode -eq 'Uninstall'))}
     } catch {
         $failure=$_;$rollbackErrors=@()
+        if($Device){try{$Device.Rollback()}catch{$rollbackErrors+=$_.Exception}}
         # Attempt EVERY restoration, even if another restoration fails. Keep
         # the original error and durable backups for an explicit later retry.
         foreach ($entry in $attempted) {
@@ -238,6 +384,10 @@ function Invoke-OwnedMapperTransaction([object[]]$Entries,[string]$Mode,[string]
                     elseif ($current) {[IO.File]::Delete($entry.target)}
                 }
             } catch {$rollbackErrors+=$_.Exception}
+            if($entry.priorSlotMigration){
+                try {Restore-MapperValue $entry.key $entry.priorSlotMigration.slot $entry.priorSlotMigration.before}
+                catch {$rollbackErrors+=$_.Exception}
+            }
             try {
                 $slotNow=Get-MapperValueSnapshot $entry.key $entry.slot
                 $expectedSlot=if ($Mode -eq 'Uninstall') {$entry.originalSlot} else {@{exists=$true;value=$DriverName;kind=[Microsoft.Win32.RegistryValueKind]::String}}
@@ -326,6 +476,27 @@ function Get-OwnedMapperRepairSourceHash([string]$Source,[string]$OwnedHash) {
     return $hash
 }
 
+function Get-MapperReservedAliases {
+    $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryView]::Registry64)
+    $media=$base.OpenSubKey('SYSTEM\CurrentControlSet\Control\Class\{4d36e96c-e325-11ce-bfc1-08002be10318}')
+    try {
+        if(-not $media){return}
+        foreach($name in $media.GetSubKeyNames()|Where-Object {$_ -match '^\d{4}$'}){
+            $midi=$media.OpenSubKey($name+'\Drivers\midi')
+            if(-not $midi){continue}
+            try {foreach($driver in $midi.GetSubKeyNames()){
+                $registration=$midi.OpenSubKey($driver)
+                try {
+                    if($driver -ine 'ABMSynthMapper.drv'){
+                        $alias=[string]$registration.GetValue('Alias','')
+                        if($alias -match '^midi[1-9]$'){$alias}
+                    }
+                } finally {$registration.Close()}
+            }} finally {$midi.Close()}
+        }
+    } finally {if($media){$media.Close()};$base.Close()}
+}
+
 Assert-OwnedMapperHost
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
 $driverName='ABMSynthMapper.drv'
@@ -346,7 +517,27 @@ $backupRoot=Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]:
 $backupDirectory=Join-Path $backupRoot ([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
 $entries=@();$handles=@()
+$device=$null
 try {
+    # A MEDIA Alias is shared across architectures. Select a common slot
+    # before preparing either architecture, and retain old owned-slot rollback.
+    $sharedSlot=$null
+    if($Action -ne 'Uninstall'){
+        $reserved=@(Get-MapperReservedAliases)
+        $available=@(1..9|ForEach-Object {"midi$_"}|Where-Object {$_ -notin $reserved});$preferred=@()
+        foreach($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)){
+            $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view)
+            $key=$base.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32')
+            try{
+                $available=@($available|Where-Object {$null -eq $key.GetValue($_,$null) -or [string]$key.GetValue($_) -in @('ABMSynthMidi.drv',$driverName)})
+                $preferred+=@($key.GetValueNames()|Where-Object {$_ -match '^midi[1-9]$' -and [string]$key.GetValue($_) -in @('ABMSynthMidi.drv',$driverName)})
+            }finally{$key.Close();$base.Close()}
+        }
+        $sharedSlot=@($preferred|Where-Object {$_ -in $available}|Select-Object -Unique|Sort-Object|Select-Object -First 1)
+        if(-not $sharedSlot){$sharedSlot=@($available|Select-Object -First 1)}
+        if(-not $sharedSlot){throw 'No common owned/free MIDI slot is available for persistent registration.'}
+        $sharedSlot=[string]$sharedSlot[0]
+    }
     # Prepare BOTH architectures and durable snapshots before any file or
     # driver registration changes. Only Backup/SHA256 metadata is owned here.
     foreach ($arch in @('x64','x86')) {
@@ -369,6 +560,7 @@ try {
         $handles+=$state
         $backupBefore=Get-MapperValueSnapshot $state 'Backup';$hashBefore=Get-MapperValueSnapshot $state 'SHA256'
         $saved=if ($backupBefore.exists) {[string]$backupBefore.value} else {''}
+        $migration=$null
         if ($saved) {
             $originalSlot=$saved | ConvertFrom-Json;$slot=[string]$originalSlot.slot
             if($Action -in @('Repair','Update')){
@@ -386,6 +578,17 @@ try {
         else {
             if($Action -eq 'Repair'){$script:mapperFailureCode='REPAIR_OWNERSHIP_MISSING'}
             throw "Owned $arch slot backup is missing."
+        }
+        if($sharedSlot -and $slot -ne $sharedSlot){
+            $migration=@{slot=$slot;before=(Get-MapperValueSnapshot $key $slot);after=$originalSlot}
+            $slot=$sharedSlot
+            $originalSlot=Get-MapperValueSnapshot $key $slot;$originalSlot.slot=$slot
+            if($originalSlot.exists -and [string]$originalSlot.value -notin @('ABMSynthMidi.drv',$driverName)){throw 'Shared MIDI slot became occupied during preparation.'}
+            $saved=$originalSlot|ConvertTo-Json -Compress
+        }
+        if($Action -ne 'Uninstall'){
+            $candidateSlot=Get-MapperValueSnapshot $key $slot
+            if($candidateSlot.exists -and [string]$candidateSlot.value -notin @('ABMSynthMidi.drv',$driverName)){throw 'Selected MIDI slot became occupied during preparation.'}
         }
         $before='';$backupFile=Join-Path $backupDirectory "$arch-$driverName"
         if (Test-Path -LiteralPath $target) {
@@ -408,12 +611,15 @@ try {
         $entries+=@{arch=$arch;slot=$slot;subkey=$subkey;view=$view.ToString();target=$target;source=$source;backupFile=$backupFile;
             retired=if($Action -eq 'Uninstall'){$target+'.abm-removed-'+[Guid]::NewGuid().ToString('N')}else{''};
             before=$before;after=$after;slotBackup=$saved;originalSlot=$originalSlot;
-            slotBefore=(Get-MapperValueSnapshot $key $slot);backupBefore=$backupBefore;hashBefore=$hashBefore;key=$key;state=$state}
+            slotBefore=(Get-MapperValueSnapshot $key $slot);backupBefore=$backupBefore;hashBefore=$hashBefore;priorSlotMigration=$migration;key=$key;state=$state}
     }
     ConvertTo-OwnedMapperBackup $entries |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $backupDirectory 'before.json') -Encoding UTF8
+    Initialize-OwnedMapperDeviceType
+    $device=[ABMSynthMapperDevice]::Open(($Action -ne 'Uninstall'))
+    if($device){@{software_key=$device.SoftwareKey;alias=$device.Alias}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $backupDirectory 'device-before.json') -Encoding UTF8}
     $script:mapperPhase='transaction'
-    Invoke-OwnedMapperTransaction $entries $Action $driverName
+    Invoke-OwnedMapperTransaction $entries $Action $driverName $device
     $cleanup=@();$reboot=$false
     if($Action -eq 'Uninstall'){
         $script:mapperPhase='cleanup'
@@ -425,5 +631,5 @@ try {
     $result | Set-Content -LiteralPath (Join-Path $backupDirectory 'result.json') -Encoding UTF8
     [Console]::Out.WriteLine($result)
     if($reboot){exit 3010}
-} finally {foreach ($handle in $handles) {if ($handle) {$handle.Close()}}}
+} finally {if($device){$device.Dispose()};foreach ($handle in $handles) {if ($handle) {$handle.Close()}}}
 } finally {Exit-OwnedMapperInstaller $installerGate}

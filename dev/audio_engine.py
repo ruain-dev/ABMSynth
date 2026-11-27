@@ -1047,8 +1047,9 @@ def _reset_channel_state(channel: int) -> None:
     apply_channel_reset_defaults(channel)
 
 
-def _apply_learned_cc(channel: int, target: str, controller_value: int) -> None:
-    amount = channel_cc_target_value(target, controller_value)
+def _apply_learned_cc(channel: int, target: str, controller_value: int, controller=None) -> None:
+    amount = (_active_runtime().midi_learn.cc_value(channel, controller, target, controller_value)
+              if controller is not None else channel_cc_target_value(target, controller_value))
     if target in CHANNEL_MODE_SWITCHES:
         set_channel_mode_switch(channel, target, amount >= 64)
     elif target in CHANNEL_FUNCTION_TARGETS:
@@ -1515,12 +1516,13 @@ def _apply_bmsynth_reset_from_sysex():
     apply_channel_reset_defaults()
 
 
-def ensure_midi_port(port):
+def ensure_midi_port(port, *, remember=True):
     """Allocate a complete port before dispatch, never during PCM rendering."""
     address = MidiAddress(port, 0)
     target = address.native + 16
     with _active_runtime().midi_lock:
-        _active_runtime().addresses.used_ports.add(port)
+        if remember:
+            _active_runtime().addresses.used_ports.add(port)
         if target <= _active_runtime().addresses.count:
             if _active_runtime().stream_effects.delay.stream:
                 _active_runtime().stream_effects.delay.install(range(address.native, target), _active_runtime().addresses.drums)
@@ -1952,7 +1954,7 @@ def _midi_payload_steps(owner,original,port,trace_packet_id,received_stamp,recei
                 if not (yield from flush()):
                     return False
                 for target in learned:
-                    _apply_learned_cc(channel, target, data2)
+                    _apply_learned_cc(channel, target, data2, data1)
                 i += 3
                 continue
             send_field = {91: "reverb", 93: "chorus", 94: "delay_send"}.get(data1)

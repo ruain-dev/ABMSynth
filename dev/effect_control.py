@@ -230,7 +230,7 @@ CHORUS_CONTROL_EVENTS = tuple(
 )
 CHORUS_EVENT_BY_CONTROL = dict(CHORUS_CONTROL_EVENTS)
 
-from effect_presentation import EQ_CENTER_INPUT_STEPS, numeric_entry_domain
+from effect_presentation import EQ_CENTER_INPUT_STEPS, numeric_entry_domain, CcValueRange
 
 @dataclass(frozen=True)
 class EffectRowSpec:
@@ -766,11 +766,27 @@ def audio_fx_cc_bindings(slot):
     keys={parameter.key for parameter in AUDIO_FX_PARAMETERS[slot.kind]}
     if any(key not in keys or (type(value) is not int or not 0<=value<120) and value!='learn'
            for key,value in bindings.items()):raise ValueError('audio effect CC source')
+    ranges = dict(slot.extras).get('midi_cc_ranges', {})
+    if not isinstance(ranges, dict) or any(key not in keys for key in ranges):
+        raise ValueError('audio effect CC range')
+    for parameter in AUDIO_FX_PARAMETERS[slot.kind]:
+        audio_fx_cc_range(slot, parameter)
     return dict(bindings)
 
 
-def audio_fx_cc_value(parameter,cc):
+def audio_fx_cc_range(slot, parameter):
+    record = dict(slot.extras).get('midi_cc_ranges', {}).get(parameter.key)
+    if record is None:
+        return None
+    if not isinstance(record, (list, tuple)) or len(record) != 3:
+        raise ValueError('audio effect CC range')
+    return CcValueRange(*record).validate(parameter.minimum, parameter.maximum, parameter.step)
+
+
+def audio_fx_cc_value(parameter,cc,value_range=None):
     """MIDI7-bit source,existing parameter domain and precision,nearest grid."""
+    if value_range is not None:
+        return parameter.validate(round(value_range.value(cc), parameter.entry_domain.decimals))
     value=parameter.minimum+(parameter.maximum-parameter.minimum)*cc/127
     ticks=math.floor((value-parameter.minimum)/parameter.step+.5)
     return parameter.validate(max(parameter.minimum,min(parameter.maximum,

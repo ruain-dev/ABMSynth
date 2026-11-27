@@ -9,6 +9,31 @@ from dataclasses import dataclass
 from i18n import tr
 
 
+@dataclass(frozen=True)
+class CcValueRange:
+    minimum: float
+    maximum: float
+    step: float
+
+    def validate(self, minimum, maximum, precision=1):
+        values = (self.minimum, self.maximum, self.step)
+        if (not all(type(value) in (int, float) and math.isfinite(value) for value in values)
+                or not minimum <= self.minimum < self.maximum <= maximum
+                or not precision <= self.step <= self.maximum - self.minimum
+                or any(abs(value / precision - round(value / precision)) > 1e-6 for value in values)):
+            raise ValueError(tr('channel_editor.cc_range_invalid'))
+        return self
+
+    def value(self, controller):
+        if type(controller) is not int or not 0 <= controller <= 127:
+            raise ValueError('MIDI CC value')
+        if controller == 127:
+            return self.maximum
+        value = self.minimum + (self.maximum - self.minimum) * controller / 127
+        ticks = math.floor((value - self.minimum) / self.step + .5)
+        return min(self.maximum, max(self.minimum, self.minimum + ticks * self.step))
+
+
 # Configuration views, never audio analyzers. These models have no BASS handles.
 FX_VISUAL_FAMILIES = {
     **dict.fromkeys(('parametric_eq','low_pass','high_pass','low_shelf','high_shelf','band_pass','notch'),'filter'),
@@ -276,14 +301,20 @@ class NumericEntryDomain:
 
     @property
     def minimum(self):
+        if self.kind == 'tuning_hz':
+            return self.to_entry(self.raw_minimum)
         return -100.0 if self.kind == "drum_fine" else (self.raw_minimum - self.offset) / self.scale
 
     @property
     def maximum(self):
+        if self.kind == 'tuning_hz':
+            return self.to_entry(self.raw_maximum)
         return 100.0 if self.kind == "drum_fine" else (self.raw_maximum - self.offset) / self.scale
 
     def to_entry(self, raw):
         raw = float(raw)
+        if self.kind == 'tuning_hz':
+            return 440.0 * 2 ** (raw / 1200)
         if self.kind == "drum_fine":
             return (raw - 64) * 100 / (64 if raw < 64 else 63)
         return (raw - self.offset) / self.scale
@@ -292,6 +323,8 @@ class NumericEntryDomain:
         number = float(number)
         if not math.isfinite(number) or not self.minimum <= number <= self.maximum:
             raise ValueError("numeric entry domain")
+        if self.kind == 'tuning_hz':
+            return 1200 * math.log2(number / 440.0)
         if self.kind == "drum_fine":
             return round(64 + number * (64 if number < 0 else 63) / 100)
         return self.offset + number * self.scale

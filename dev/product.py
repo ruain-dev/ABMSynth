@@ -1,8 +1,9 @@
 """Canonical ABMSynth product identifiers shared by Python runtime layers."""
 
 PRODUCT_NAME = "ABMSynth"
-PRODUCT_VERSION = "1.0.1"
+PRODUCT_VERSION = "1.0.2"
 PRODUCT_TAG = "v" + PRODUCT_VERSION
+PRODUCT_VERSION_NUMERIC = tuple(int(part) for part in PRODUCT_VERSION.split("-", 1)[0].split(".")) + (0,)
 PRODUCT_PUBLISHER = "ruain"
 PRODUCT_COPYRIGHT = "Copyright (c) 2026 ruain"
 PROJECT_URL = "https://github.com/ruain-dev/ABMSynth"

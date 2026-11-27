@@ -332,12 +332,18 @@ class OutputAnalysis:
             self.stream = 0
 
 
+NOTE_TIMING_CAUTION_BLOCKS = 1.5
+NOTE_TIMING_WARNING_BLOCKS = 2.0
+
+
 def note_delivery_statistics(array, frequency, rate, now):
     """Received->sample-referenced PCM changes: mean1s,max5s,producer epochs.
 
     Integer QPC differences precede float conversion. Each pair's uncertainty
     is the longer actual containing block plus two cross-thread clock ticks.
     Full bounded history supplies one previous reference per producer.
+    Caution/warning use inclusive 1.5/2-block product thresholds independently
+    of the one-block diagnostic residual and its clock uncertainty.
     """
     if not len(array) or frequency<=0 or rate<=0:return {"note_samples":0}
     recent=array[:,6]/frequency>=now-1
@@ -361,7 +367,7 @@ def note_delivery_statistics(array, frequency, rate, now):
     fault_delays=delays+sample_offsets
     if array.shape[1]>14:fault_delays-=array[:,14].astype(np.float64)/frequency*1000
     identities=array[:,(10,11,13)]
-    variations=[];excesses=[];peaks=[]
+    variations=[];excesses=[];levels=[];peaks=[]
     for identity in np.unique(identities[peak_recent],axis=0):
         mask=np.all(identities==identity,axis=1)
         indices=np.flatnonzero(mask&peak_recent)
@@ -372,13 +378,19 @@ def note_delivery_statistics(array, frequency, rate, now):
         peaks.append(variation)
         current=recent[indices[1:]]
         block=array[indices,7].astype(np.float64)/rate*1000
-        bound=np.maximum(block[1:],block[:-1])+2/frequency*1000
+        pair_block=np.maximum(block[1:],block[:-1])
+        clock_uncertainty=2/frequency*1000
+        bound=pair_block+clock_uncertainty
+        ratio=np.divide(variation,pair_block,out=np.zeros_like(variation),where=pair_block>0)
+        pair_levels=np.searchsorted((NOTE_TIMING_CAUTION_BLOCKS,NOTE_TIMING_WARNING_BLOCKS),ratio,side='right')
         if current.any():
             variations.append(variation[current]);excesses.append(np.maximum(0,variation-bound)[current])
+            levels.append(pair_levels[current])
     if variations:
         variation=np.concatenate(variations)
         result.update(note_jitter_mean_ms=float(np.mean(variation)),
-            note_timing_excess_ms=float(np.max(np.concatenate(excesses))))
+            note_timing_excess_ms=float(np.max(np.concatenate(excesses))),
+            note_timing_level=int(np.max(np.concatenate(levels))))
     if peaks:result['note_jitter_max_ms']=float(np.max(np.concatenate(peaks)))
     return result
 
@@ -723,9 +735,12 @@ class OutputMeter:
         self._native_callback = None
         self._native_control = threading.RLock()
         self._native_wave = (ctypes.c_float * 4096)()
+        self._native_wave_view = np.ctypeslib.as_array(self._native_wave)
         self._native_peaks = (ctypes.c_float * 2)()
         self._native_revision = ctypes.c_uint64()
         self._last_native_revision = None
+        self._native_visual_samples = ()
+        self._native_visual_silent = False
         self._native_timing = (ctypes.c_uint64 * 1024)()
         self._native_timing_frequency = ctypes.c_uint64()
         self._native_timing_revision = ctypes.c_uint64()
@@ -1118,7 +1133,12 @@ class OutputMeter:
                 if self._last_native_revision != self._native_revision.value:
                     self.revision += 1
                     self._last_native_revision = self._native_revision.value
-                return tuple(self._native_wave[:count]), self.sample_rate/max(1, round(self.sample_rate/VISUAL_CAPTURE_RATE)), self.revision
+                    wave = self._native_wave_view[:count]
+                    silent = not wave.any()
+                    if not (silent and self._native_visual_silent and count == len(self._native_visual_samples)):
+                        self._native_visual_samples = (0.0,) * count if silent else tuple(self._native_wave[:count])
+                    self._native_visual_silent = silent
+                return self._native_visual_samples, self.sample_rate/max(1, round(self.sample_rate/VISUAL_CAPTURE_RATE)), self.revision
         with self.lock:
             return tuple(self.waveform), self.visual_rate, self.revision
 

@@ -11,7 +11,7 @@ import ctypes
 import os
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -1868,9 +1868,10 @@ class NativeStreamEffectGraph:
 
 class NativeFXTopologyPlan:
     """Immutable copied vendor request; graph/slot roots survive native ACK."""
-    def __init__(self,graph,slots):
+    def __init__(self,graph,slots,*,prepare_reset=True,midi_slots=None):
         self.graph=graph;self.rack=graph.rack;self.library=graph.library;self.slots=slots;self.pointer=None
         self._lifetime=threading.RLock();self.inflight=False
+        self.reset_pointers=();self.reset_slots=None
         graph._preparing+=1
         try:
             descriptors,roots=graph.describe(slots)
@@ -1879,8 +1880,29 @@ class NativeFXTopologyPlan:
             self.pointer=create(graph.pointer,descriptors,len(descriptors))
             if not self.pointer:raise ValueError('FX topology preparation')
             if graph.rack.channel_index is not None:
-                from channel_audio_effects import prepare_channel_midi
-                prepare_channel_midi(graph,self.pointer,slots,audio_fx_native_parameters,_CUSTOM_FX)
+                from channel_audio_effects import ChannelAudioEffects,prepare_channel_midi
+                prepare_channel_midi(graph,self.pointer,slots if midi_slots is None else midi_slots,audio_fx_native_parameters,_CUSTOM_FX)
+                reset_prepare=getattr(self.library,'channel_fx_reset_prepare',None)
+                if prepare_reset and reset_prepare is not None and graph.owner is not None:
+                    self.reset_slots=tuple(ChannelAudioEffects._reset_slot(slot) for slot in slots)
+                    if self.reset_slots==slots and all(a.extras==b.extras for a,b in zip(self.reset_slots,slots)):
+                        reset_pointer=self.pointer
+                        self.reset_pointers=self.prepared_pointers
+                        reset_plan=None
+                    else:
+                        from effect_control import audio_fx_cc_bindings
+                        seed=tuple(replace(slot,extras=tuple({**dict(slot.extras),'midi_cc':audio_fx_cc_bindings(current)}.items()))
+                            if any(cc=='learn' for cc in audio_fx_cc_bindings(current).values()) else slot
+                            for slot,current in zip(self.reset_slots,slots))
+                        reset_plan=NativeFXTopologyPlan(graph,seed,prepare_reset=False,midi_slots=self.reset_slots)
+                        reset_pointer=reset_plan.pointer
+                        self.reset_pointers=reset_plan.prepared_pointers
+                    try:
+                        reset_prepare.argtypes=[ctypes.c_void_p]*2
+                        reset_prepare.restype=ctypes.c_int
+                        if not reset_prepare(self.pointer,reset_pointer):raise ValueError('channel audio FX Reset preparation')
+                    finally:
+                        if reset_plan is not None:reset_plan.close()
             self._roots=roots;graph.plans.add(self)
         except BaseException:
             if self.pointer:self.library.fx_topology_plan_release(self.pointer);self.pointer=None
@@ -1906,7 +1928,7 @@ class NativeFXTopologyGraph:
     """
     def __init__(self,rack,library,*,owner=None):
         self.rack=rack;self.library=library;self.pointer=None;self.plans=set();self.identities=[];self.reuse_keys=[]
-        self.kernel_keys=[];self.prepared={};self.slot_roots={};self._preparing=0;self.version=2 if hasattr(library,'fx_topology_version2') else 1
+        self.kernel_keys=[];self.prepared={};self.slot_roots={};self.reset_pointers=();self.reset_slots=None;self._preparing=0;self.version=2 if hasattr(library,'fx_topology_version2') else 1
         self.stream=rack.stream;self.owner=owner;self.stream_generation=owner.stream_generation if owner is not None else None
         if owner is not None and owner.stream_handle!=self.stream:raise ValueError('FX topology owner stream')
         for name,args,result in (('version',[],ctypes.c_uint),
@@ -1993,8 +2015,11 @@ class NativeFXTopologyGraph:
     def collect_prepared(self):
         if self._preparing:return
         retained={stage.pointer for stage in (*self.rack.stages,*self.rack._retired_stages) if stage.pointer and stage.handle}
+        retained.update(self.reset_pointers)
         for plan in self.plans:
-            if plan.pointer:retained.update(plan.prepared_pointers)
+            if plan.pointer:
+                retained.update(plan.prepared_pointers)
+                retained.update(plan.reset_pointers)
         for pointer in tuple(self.prepared):
             if pointer not in retained:self.rack._destroy_prepared(pointer);self.prepared.pop(pointer)
 
@@ -2041,20 +2066,34 @@ class NativeFXTopologyGraph:
         self.rack.stages=[stage(row) for row in report['topology_current']]
         self.rack._retired_stages=[stage(row) for row in report['topology_retired']]
         self.rack._faulted=report['topology_faulted']
-        if report['phase']==0:self.rack.state=plan.slots
+        if report['phase']==0:
+            self.rack.state=plan.slots
+            if plan.reset_slots is not None:
+                self.reset_slots=plan.reset_slots
+                self.reset_pointers=plan.reset_pointers
         live={stage.handle for stage in (*self.rack.stages,*self.rack._retired_stages)}
         for handle,value in old.items():
             if handle not in live:
                 value.handle=0
+                if value.pointer in self.reset_pointers or any(value.pointer in item.reset_pointers for item in self.plans):
+                    value.pointer=None
                 if value.pointer:self.prepared.pop(value.pointer,None)
                 value.dispose()
         return True
+
+    def replay_channel_reset(self,report):
+        if self.reset_slots is None:raise ValueError('channel audio FX Reset identity')
+        from types import SimpleNamespace
+        plan=SimpleNamespace(graph=self,slots=self.reset_slots,reset_slots=None)
+        self.replay(plan,report)
+        self.collect_prepared()
 
     def close(self):
         self.rack.cancel_topology_preparation()
         if self._preparing:return False
         if any(getattr(plan,'inflight',False) for plan in self.plans):return False
         for plan in tuple(self.plans):assert plan.close()
+        self.reset_pointers=();self.reset_slots=None
         self.collect_prepared()
         if self.pointer:
             if self.rack.channel_index is not None:

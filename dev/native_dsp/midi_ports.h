@@ -5,7 +5,7 @@
 #include <string>
 
 struct MidiPortRouter {
-    struct Frame {unsigned port=0,size=0;};
+    struct Frame {unsigned port=0,size=0;bool external=false;};
     struct Input {
         MidiPortRouter* owner=nullptr;unsigned port=0;HMIDIIN handle=nullptr;
         std::atomic<unsigned long long> sequence{0};
@@ -14,7 +14,7 @@ struct MidiPortRouter {
         std::array<std::array<char,65536>,4> bytes{};
         std::array<std::atomic<bool>,4> returned{};
     };
-    struct Output {unsigned port;HMIDIOUT handle;};
+    struct Output {HMIDIOUT handle;unsigned portMask;bool pairedInput;};
     void* execution;
     SRWLOCK lock=SRWLOCK_INIT;
     HANDLE wake=CreateEventW(nullptr,FALSE,FALSE,nullptr),thread=nullptr;
@@ -39,7 +39,7 @@ struct MidiPortRouter {
         frequency=f.QuadPart;epoch=static_cast<unsigned long long>(t.QuadPart)^reinterpret_cast<uintptr_t>(this);
         for(auto& buffer:sysex)buffer.reserve(65536);
     }
-    bool push(unsigned port,const void* source,unsigned size){
+    bool push(unsigned port,const void* source,unsigned size,bool external=false){
         if(port>=8||!source||!size||size>1024*1024||stopping.load())return false;
         AcquireSRWLockExclusive(&lock);
         if(count==frames.size()||size>bytes.size()-used){++losses;ReleaseSRWLockExclusive(&lock);return false;}
@@ -47,7 +47,7 @@ struct MidiPortRouter {
         std::memcpy(bytes.data()+write,source,first);
         if(first<size)std::memcpy(bytes.data(),static_cast<const unsigned char*>(source)+first,size-first);
         write=(write+size)%static_cast<unsigned>(bytes.size());used+=size;
-        frames[(head+count)%frames.size()]={port,size};++count;
+        frames[(head+count)%frames.size()]={port,size,external};++count;
         ReleaseSRWLockExclusive(&lock);SetEvent(wake);return true;
     }
     static void CALLBACK callback(HMIDIIN,UINT kind,DWORD_PTR instance,DWORD_PTR p1,DWORD_PTR){
@@ -90,13 +90,14 @@ struct MidiPortRouter {
         }
         inputs.push_back(std::move(input));return true;
     }
-    bool addOutput(unsigned device,unsigned port){
-        if(port>=8||thread)return false;HMIDIOUT handle=nullptr;
+    bool addOutput(unsigned device,unsigned portMask,bool pairedInput){
+        if(thread||!portMask||(portMask&~0xffu))return false;HMIDIOUT handle=nullptr;
         if(midiOutOpen(&handle,device,0,0,CALLBACK_NULL))return false;
-        outputs.push_back({port,handle});outputMask|=1u<<port;return true;
+        outputs.push_back({handle,portMask,pairedInput});
+        outputMask|=portMask;return true;
     }
-    void emit(unsigned port,const unsigned char* data,unsigned size){
-        for(const auto& out:outputs)if(out.port==port){
+    void emit(unsigned port,const unsigned char* data,unsigned size,bool external){
+        for(const auto& out:outputs)if((out.portMask&(1u<<port))&&!(external&&out.pairedInput)){
             MMRESULT error=0;
             if(data[0]==0xf0){
                 MIDIHDR header{};header.lpData=reinterpret_cast<LPSTR>(const_cast<unsigned char*>(data));header.dwBufferLength=size;
@@ -134,26 +135,26 @@ struct MidiPortRouter {
             }
         }
     }
-    void output(unsigned port,const unsigned char* data,unsigned size){
+    void output(unsigned port,const unsigned char* data,unsigned size,bool external){
         // WinMM short messages need complete messages. Preserve running status,
         // fragmented SysEx and interspersed real-time messages per port.
         for(unsigned index=0;index<size;++index){const auto b=data[index];
-            if(b>=0xf8){emit(port,&b,1);continue;}
+            if(b>=0xf8){emit(port,&b,1,external);continue;}
             if(!sysex[port].empty()){
                 if((b&0x80u)&&b!=0xf7){sysex[port].clear();++errors;}
                 else{
                     if(sysex[port].size()>=1024*1024){sysex[port].clear();++losses;continue;}
-                    sysex[port].push_back(b);if(b==0xf7){emit(port,sysex[port].data(),static_cast<unsigned>(sysex[port].size()));sysex[port].clear();}continue;
+                    sysex[port].push_back(b);if(b==0xf7){emit(port,sysex[port].data(),static_cast<unsigned>(sysex[port].size()),external);sysex[port].clear();}continue;
                 }
             }
             if(b==0xf0){status[port]=0;have[port]=0;sysex[port].push_back(b);continue;}
             if(b&0x80){status[port]=b;have[port]=1;message[port][0]=b;
                 need[port]=b>=0xf0?(b==0xf1||b==0xf3?2:b==0xf2?3:1):((b&0xe0)==0xc0?2:3);
-                if(need[port]==1){emit(port,message[port].data(),1);have[port]=0;status[port]=0;}continue;}
+                if(need[port]==1){emit(port,message[port].data(),1,external);have[port]=0;status[port]=0;}continue;}
             if(!status[port]){++errors;continue;}
             if(!have[port]){message[port][0]=status[port];have[port]=1;}
             message[port][have[port]++]=b;
-            if(have[port]==need[port]){emit(port,message[port].data(),need[port]);have[port]=0;if(status[port]>=0xf0)status[port]=0;}
+            if(have[port]==need[port]){emit(port,message[port].data(),need[port],external);have[port]=0;if(status[port]>=0xf0)status[port]=0;}
         }
     }
     static unsigned __stdcall run(void* pointer){
@@ -171,7 +172,7 @@ struct MidiPortRouter {
                 r.read=(r.read+frame.size)%static_cast<unsigned>(r.bytes.size());r.used-=frame.size;r.head=(r.head+1)%static_cast<unsigned>(r.frames.size());--r.count;r.busy.store(true);found=true;}
             ReleaseSRWLockExclusive(&r.lock);
             if(!found){WaitForSingleObject(r.wake,10);continue;}
-            try{r.output(frame.port,payload.data(),frame.size);}catch(const std::bad_alloc&){++r.losses;r.sysex[frame.port].clear();}
+            try{r.output(frame.port,payload.data(),frame.size,frame.external);}catch(const std::bad_alloc&){++r.losses;r.sysex[frame.port].clear();}
             r.busy.store(false);SetEvent(r.wake);
         }
         if(scheduling)AvRevertMmThreadCharacteristics(scheduling);return 0;
@@ -209,9 +210,9 @@ struct MidiPortRouter {
 };
 static SRWLOCK midiRouterLock=SRWLOCK_INIT;
 static MidiPortRouter* midiRouter=nullptr;
-static void midiRouteOutput(void* execution,unsigned port,const unsigned char* data,unsigned size){
+static void midiRouteOutput(void* execution,unsigned port,const unsigned char* data,unsigned size,bool external){
     AcquireSRWLockShared(&midiRouterLock);
-    if(midiRouter&&!midiRouter->closing.load()&&midiRouter->execution==execution&&(midiRouter->outputMask&(1u<<port)))midiRouter->push(port,data,size);
+    if(midiRouter&&!midiRouter->closing.load()&&midiRouter->execution==execution&&(midiRouter->outputMask&(1u<<port)))midiRouter->push(port,data,size,external);
     ReleaseSRWLockShared(&midiRouterLock);
 }
 static void midiRouteSemantic(void* execution,unsigned channel,unsigned event){
@@ -234,7 +235,12 @@ extern "C" __declspec(dllexport) void* __cdecl midi_ports_create(void* execution
     auto* result=midiRouter;ReleaseSRWLockExclusive(&midiRouterLock);return result;
 }
 extern "C" __declspec(dllexport) int __cdecl midi_ports_input(void* p,unsigned device,unsigned port){return p&&static_cast<MidiPortRouter*>(p)->addInput(device,port);}
-extern "C" __declspec(dllexport) int __cdecl midi_ports_output(void* p,unsigned device,unsigned port){return p&&static_cast<MidiPortRouter*>(p)->addOutput(device,port);}
+extern "C" __declspec(dllexport) int __cdecl midi_ports_shared_output(void* p,unsigned device,unsigned pairedInput){
+    return p&&static_cast<MidiPortRouter*>(p)->addOutput(device,0xffu,pairedInput!=0);
+}
+extern "C" __declspec(dllexport) int __cdecl midi_ports_routed_output(void* p,unsigned device,unsigned portMask,unsigned pairedInput){
+    return p&&static_cast<MidiPortRouter*>(p)->addOutput(device,portMask,pairedInput!=0);
+}
 extern "C" __declspec(dllexport) int __cdecl midi_ports_virtual(void* p,unsigned port,unsigned enabled){
     if(!p||port>=8)return 0;auto& r=*static_cast<MidiPortRouter*>(p);r.virtualOut[port]=enabled!=0;if(enabled)r.outputMask|=1u<<port;return 1;}
 extern "C" __declspec(dllexport) int __cdecl midi_ports_start(void* p){return p&&static_cast<MidiPortRouter*>(p)->start();}

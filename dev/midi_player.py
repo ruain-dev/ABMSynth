@@ -1305,14 +1305,50 @@ class MidiRenderOptions:
     normalize: bool = False
     peak_db: float = -1.0
     align_processing: bool = False
+    trim_tail: bool = False
+    tail_threshold_db: float = -60.0
+    tail_silence_seconds: float = 0.5
 
     def validate(self, document):
         end = document.duration if self.end is None else self.end
         if (not 0 <= self.start <= end <= document.duration or
                 not -24 <= self.transpose <= 24 or not -12 <= self.peak_db <= 0 or
-                not isinstance(self.align_processing,bool)):
+                not isinstance(self.align_processing,bool) or not isinstance(self.trim_tail,bool) or
+                not -120 <= self.tail_threshold_db <= -20 or
+                not .05 <= self.tail_silence_seconds <= 5):
             raise ValueError(tr("player.export_options_invalid"))
         return replace(self, end=end)
+
+
+def trimmed_tail_frames(path, frames, body_frames, rate, options, gain, cancel):
+    """Find the final audible frame in the completed post-effect PCM spool."""
+    import numpy as np
+    if not options.trim_tail:
+        return frames
+    threshold = 10 ** (options.tail_threshold_db / 20)
+    cursor = frames
+    last_loud = body_frames - 1
+    with Path(path).open('rb') as source:
+        while cursor > body_frames:
+            if cancel.is_set():
+                raise InterruptedError(tr('player.export_cancelled'))
+            start = max(body_frames, cursor - 4096)
+            source.seek(start * 8)
+            block = np.frombuffer(source.read((cursor - start) * 8), dtype='<f4').reshape(-1, 2)
+            signal = block.mean(axis=1) if options.mono else block
+            if not np.isfinite(signal).all():
+                raise RuntimeError(tr('player.export_qc_failed'))
+            loud = np.abs(signal * gain) > threshold
+            indices = np.flatnonzero(loud if options.mono else np.any(loud, axis=1))
+            if len(indices):
+                last_loud = start + int(indices[-1])
+                break
+            cursor = start
+    quiet_frames = frames - last_loud - 1
+    if quiet_frames < round(options.tail_silence_seconds * rate):
+        return frames
+    # Keep 50ms of the measured quiet suffix and never shorten the music body.
+    return min(frames, max(body_frames, last_loud + 1 + round(.05 * rate)))
 
 
 class ExportEndpointEvidence:
@@ -1391,7 +1427,8 @@ def render_midi(document, snapshot, destination, container, speed, muted, tail, 
     def phase(stage, done=0, total=0, percent=None):
         if report is not None:
             report(dict(stage=stage,done=done,total=total,percent=percent,at=time.monotonic(),
-                        final_pass=stage=='encode' or stage=='render' and not render_options.normalize))
+                        final_pass=stage=='encode' or stage=='render' and not
+                            (render_options.normalize or render_options.trim_tail)))
     phase('prepare')
 
     preferences = replace(snapshot.preferences, midi_async=False, auto_reset_delay_s=0)
@@ -1469,7 +1506,7 @@ def render_midi(document, snapshot, destination, container, speed, muted, tail, 
             os.close(fd); temporary = Path(name)
         options = recording_capture_options(replace(preferences, recording_container=container))
         analysis = ae.runtime.output_analysis
-        if render_options.normalize:
+        if render_options.normalize or render_options.trim_tail:
             spool = temporary.with_suffix(".f32")
             spool_file = spool.open("wb")
         else:
@@ -1533,7 +1570,7 @@ def render_midi(document, snapshot, destination, container, speed, muted, tail, 
                     raise RuntimeError(tr("player.decode_failed", error=bass.BASS_ErrorGetCode()))
                 consume(frames)
                 current += frames
-                percent = min(99, 15+current*(60 if render_options.normalize else 84)//max(1, render_total))
+                percent = min(99, 15+current*(60 if render_options.normalize or render_options.trim_tail else 84)//max(1, render_total))
                 if percent != last_progress:
                     progress(percent); last_progress = percent
                     phase('render',current,render_total,percent)
@@ -1562,13 +1599,24 @@ def render_midi(document, snapshot, destination, container, speed, muted, tail, 
             return False
         if spool_file is not None:
             spool_file.close(); spool_file = None
-            gain = 10**(render_options.peak_db/20)/peak if peak > 0 else 1.0
+            gain = 10**(render_options.peak_db/20)/peak if render_options.normalize and peak > 0 else 1.0
+            original_total = total
+            total = trimmed_tail_frames(spool, total, end_frame + shift - first_frame,
+                                        rate, render_options, gain, cancel)
+            manifest['frame_range']['encoded_total'] = total
+            manifest['frame_range']['trimmed_tail_frames'] = original_total - total
+            manifest['tail_detection'] = dict(threshold_db=render_options.tail_threshold_db,
+                minimum_quiet_seconds=render_options.tail_silence_seconds, padding_seconds=.05,
+                domain='post-effect post-normalization encoder input')
             analysis.start_recording(str(temporary), queued=False, manual=True,
                                      mono=render_options.mono, **options)
             encoded = 0
             phase('encode',0,total,75)
             with spool.open("rb") as source:
-                while data := source.read(4096*8):
+                while encoded < total:
+                    data = source.read(min(4096, total - encoded) * 8)
+                    if not data:
+                        raise RuntimeError(tr('player.export_qc_failed'))
                     if cancel.is_set():
                         return False
                     block = np.frombuffer(data,dtype="<f4").copy()

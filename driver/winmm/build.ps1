@@ -57,6 +57,12 @@ if ($BuildSmokeHost) {
     $smokeCommand="call `"$vsDevCmd`" -arch=$Architecture -host_arch=x64 && cl.exe /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /Fo`"$smokeObject`" `"$smokeSource`" /link /OUT:`"$smokeExe`" winmm.lib"
     & cmd.exe /d /c $smokeCommand
     if ($LASTEXITCODE -ne 0) { throw "WinMM smoke host build failed with exit code $LASTEXITCODE." }
+    $enumerationSource=Join-Path $root 'tests\enumeration_probe.cpp'
+    $enumerationObject=Join-Path $outDir 'enumeration_probe.obj'
+    $enumerationExe=Join-Path $outDir 'enumeration_probe.exe'
+    $enumerationCommand="call `"$vsDevCmd`" -arch=$Architecture -host_arch=x64 && cl.exe /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /Fo`"$enumerationObject`" `"$enumerationSource`" /link /OUT:`"$enumerationExe`" advapi32.lib"
+    & cmd.exe /d /c $enumerationCommand
+    if ($LASTEXITCODE -ne 0) { throw "WinMM enumeration probe build failed with exit code $LASTEXITCODE." }
 }
 if ($BuildCoexistProbe) {
     $probeSource=Join-Path $root 'tests\coexist_probe.cpp'

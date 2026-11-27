@@ -11,6 +11,8 @@ $portableTouched = @()
 $portableApplied = $false
 $ownsLock = $false
 $succeeded = $false
+$restartAllowed = $false
+$previousManifest = $null
 function File-Digest([string]$path) {
     $stream = [IO.File]::OpenRead($path)
     $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -34,6 +36,25 @@ function Target-Path([string]$relative) {
     if (-not $target.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Deployment path escaped' }
     Assert-PlainPath $target
     return $target
+}
+function Assert-InstalledFiles([string]$manifestDigest) {
+    $manifest = Target-Path 'installed-files.txt'
+    if ($manifestDigest -and (File-Digest $manifest) -ne $manifestDigest) {
+        throw 'Previous installation manifest changed'
+    }
+    $seen = @{}
+    foreach ($row in Get-Content -LiteralPath $manifest -Encoding UTF8) {
+        if ($row -notmatch '^([a-f0-9]{64})  (.+)$') { throw 'Invalid installation manifest' }
+        $expected = $Matches[1]
+        $relative = $Matches[2]
+        $path = Target-Path $relative
+        if ($seen.ContainsKey($path) -or (File-Digest $path) -ne $expected) {
+            throw ('Installation file mismatch: ' + $relative)
+        }
+        $seen[$path] = $true
+    }
+    if (-not $seen.ContainsKey($executable) -or
+        -not $seen.ContainsKey((Target-Path 'DISTRIBUTION.json'))) { throw 'Incomplete installation manifest' }
 }
 try {
     # Reset the inherited frozen application's DLL search path in this helper
@@ -68,10 +89,16 @@ try {
     } finally { if ($running) { $running.Dispose() } }
     if ((File-Digest $plan.package) -ne $plan.sha256) { throw 'Package changed' }
     if ($plan.mode -eq 'installed') {
+        $previousManifest = File-Digest (Target-Path 'installed-files.txt')
         $arguments = @('/SILENT','/SP-','/NORESTART','/NOCLOSEAPPLICATIONS','/NOFORCECLOSEAPPLICATIONS',
                        ('/DIR="' + $root + '"'),('/LOG="' + (Join-Path $jobDirectory 'setup.log') + '"'))
         $setup = Start-Process -FilePath $plan.package -ArgumentList $arguments -Wait -PassThru
         if ($setup.ExitCode -notin @(0,3010)) { throw ('Setup failed: ' + $setup.ExitCode) }
+        Assert-InstalledFiles ''
+        $distribution = Get-Content -LiteralPath (Target-Path 'DISTRIBUTION.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($distribution.mode -ne 'installed' -or $distribution.version -ne $plan.version) {
+            throw 'Installed version does not match the update'
+        }
     } else {
         # Validate every destination and every staged file before the first write.
         foreach ($row in $plan.files) {
@@ -94,12 +121,23 @@ try {
         }
         $portableApplied = $true
     }
+    $restartAllowed = $true
     [IO.File]::WriteAllText((Join-Path $jobDirectory 'result.json'), '{"passed":true}')
     $succeeded = $true
 } catch {
     $failure = $_.Exception.Message
     $rollbackOK = $true
-    if (-not $portableApplied) {
+    if ($plan.mode -eq 'installed') {
+        $rollbackOK = $false
+        if ($previousManifest) {
+            try {
+                Assert-InstalledFiles $previousManifest
+                $rollbackOK = $true
+            } catch {
+                $failure += '; ' + $_.Exception.Message
+            }
+        }
+    } elseif (-not $portableApplied) {
         for ($i = $portableTouched.Count - 1; $i -ge 0; $i--) {
             $row = $portableTouched[$i]
             try {
@@ -109,9 +147,12 @@ try {
         }
     }
     @{passed=$false;error=$failure;rollback=$rollbackOK} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $jobDirectory 'result.json') -Encoding UTF8
+    $restartAllowed = $rollbackOK
     if ($committed) {
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("업데이트를 완료하지 못했습니다.`n검사 기록: $jobDirectory", 'ABMSynth', 'OK', 'Warning') | Out-Null
+        $message = '업데이트를 완료하지 못했습니다.'
+        if (-not $rollbackOK) { $message += "`nABMSynth 설치 파일을 다시 실행해 복구하세요." }
+        [System.Windows.Forms.MessageBox]::Show("$message`n검사 기록: $jobDirectory", 'ABMSynth', 'OK', 'Warning') | Out-Null
     }
 } finally {
     if ($lock) {
@@ -135,6 +176,6 @@ try {
         }
     }
 }
-if ($committed -and ($succeeded -or $rollbackOK) -and (Test-Path -LiteralPath $executable)) {
+if ($committed -and $restartAllowed -and (Test-Path -LiteralPath $executable)) {
     Start-Process -FilePath $executable -WorkingDirectory $root
 }

@@ -47,7 +47,7 @@ def verify_executable(path, version):
     if length < 52:raise ValueError(tr('support.update_unverified'))
     fixed = struct.unpack('<13I', ctypes.string_at(pointer,52))
     observed = (fixed[4] >> 16, fixed[4] & 65535, fixed[5] >> 16, fixed[5] & 65535)
-    if fixed[0] != 0xfeef04bd or observed != version_key(version) + (0,):
+    if fixed[0] != 0xfeef04bd or observed != version_key(version)[:3] + (0,):
         raise ValueError(tr('support.update_unverified'))
     pointer, length = query('\\VarFileInfo\\Translation')
     if length < 4:raise ValueError(tr('support.update_unverified'))

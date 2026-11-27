@@ -11,7 +11,7 @@ import threading
 from dataclasses import replace
 
 from effect_control import (AUDIO_FX_GROUPS,AUDIO_FX_PARAMETERS,audio_fx_from_ini,audio_fx_ini,
-    validate_audio_fx,audio_fx_cc_bindings,audio_fx_cc_value)
+    validate_audio_fx,audio_fx_cc_bindings,audio_fx_cc_value,audio_fx_cc_range)
 
 
 CHANNEL_FX_CC_MANUAL={'saturation_quality','quality_transition_ms','transition_ms'}
@@ -24,12 +24,20 @@ def channel_fx_cc_allowed(slot,parameter):
 def _cancel_learn(slot):
     bindings=audio_fx_cc_bindings(slot);extras=dict(slot.extras)
     previous=extras.pop('midi_cc_previous',{})
+    previous_ranges = extras.pop('midi_cc_previous_ranges', {})
+    ranges = dict(extras.get('midi_cc_ranges', {}))
     for key,value in tuple(bindings.items()):
         if value=='learn':
             if type(previous.get(key)) is int:bindings[key]=previous[key]
             else:bindings.pop(key)
+            if previous_ranges.get(key) is None:
+                ranges.pop(key, None)
+            else:
+                ranges[key] = previous_ranges[key]
     if bindings:extras['midi_cc']=bindings
     else:extras.pop('midi_cc',None)
+    if ranges:extras['midi_cc_ranges'] = ranges
+    else:extras.pop('midi_cc_ranges', None)
     return replace(slot,extras=tuple(extras.items()))
 
 
@@ -61,7 +69,8 @@ def prepare_channel_midi(graph,plan,slots,encode,custom_kinds):
             index=next(i for i,p in enumerate(AUDIO_FX_PARAMETERS[slot.kind]) if p.key==key)
             if not channel_fx_cc_allowed(slot,index):raise ValueError('manual kernel control')
             parameter=AUDIO_FX_PARAMETERS[slot.kind][index]
-            decoded=[audio_fx_cc_value(parameter,cc) for cc in range(128)]
+            value_range = audio_fx_cc_range(slot, parameter)
+            decoded=[audio_fx_cc_value(parameter,cc,value_range) for cc in range(128)]
             payload=[]
             for value in decoded:
                 values=list(slot.values);values[index]=value
@@ -153,12 +162,16 @@ class ChannelAudioEffects:
                     bindings[parameter.key]=int(row.cc)
                     extras=dict(slot.extras);extras['midi_cc']=bindings
                     previous=dict(extras.get('midi_cc_previous',{}));previous.pop(parameter.key,None)
+                    previous_ranges = dict(extras.get('midi_cc_previous_ranges', {}))
+                    previous_ranges.pop(parameter.key, None)
+                    if previous_ranges:extras['midi_cc_previous_ranges'] = previous_ranges
+                    else:extras.pop('midi_cc_previous_ranges', None)
                     if previous:extras['midi_cc_previous']=previous
                     else:extras.pop('midi_cc_previous',None)
                     slots[index]=replace(slot,values=tuple(values),extras=tuple(extras.items())).validated();changed=True
                 if changed:self._states[channel]=(tuple(slots),enabled);self.revision+=1
 
-    def assign_cc(self,channel,identity,parameter,source):
+    def assign_cc(self,channel,identity,parameter,source,*,value_range=None,learn_channels=()):
         self.sync_midi()
         with self._lock:
             slots,enabled=next((request for (ch,_token),request in reversed(tuple(self._requests.items()))
@@ -167,7 +180,7 @@ class ChannelAudioEffects:
         # its former source; a partial Learn is never a persisted preference.
         if source=='learn':
             for other,(records,active) in tuple(self._states.items()):
-                if other!=channel and any('learn' in audio_fx_cc_bindings(slot).values() for slot in records):
+                if other!=channel and other not in learn_channels and any('learn' in audio_fx_cc_bindings(slot).values() for slot in records):
                     self.request(other,tuple(_cancel_learn(slot) for slot in records),active)
             slots=tuple(_cancel_learn(slot) for slot in slots)
         updated=[];found=False
@@ -177,19 +190,41 @@ class ChannelAudioEffects:
                 if not channel_fx_cc_allowed(slot,parameter):raise ValueError('manual kernel control')
                 bindings=audio_fx_cc_bindings(slot);key=AUDIO_FX_PARAMETERS[slot.kind][parameter].key
                 extras=dict(slot.extras);previous=dict(extras.get('midi_cc_previous',{}))
+                ranges = dict(extras.get('midi_cc_ranges', {}))
+                previous_ranges = dict(extras.get('midi_cc_previous_ranges', {}))
+                if source == 'learn':
+                    previous_ranges[key] = ranges.get(key)
+                spec = AUDIO_FX_PARAMETERS[slot.kind][parameter]
+                if value_range is not None:
+                    value_range.validate(spec.minimum, spec.maximum, spec.step)
+                    ranges[key] = [value_range.minimum, value_range.maximum, value_range.step]
+                elif source not in (None, 'clear'):
+                    ranges.pop(key, None)
                 if source is None and bindings.get(key)=='learn':
                     old=previous.pop(key,None)
                     if type(old) is int:bindings[key]=old
                     else:bindings.pop(key,None)
+                    old_range = previous_ranges.pop(key, None)
+                    if old_range is not None:ranges[key] = old_range
+                    else:ranges.pop(key, None)
                 elif source in (None,'clear'):bindings.pop(key,None);previous.pop(key,None)
                 elif source=='learn':
                     previous[key]=bindings.get(key);bindings[key]='learn'
                 elif type(source) is int and 0<=source<120:bindings[key]=source;previous.pop(key,None)
                 else:raise ValueError('channel effect CC source')
+                if source != 'learn':previous_ranges.pop(key, None)
+                if previous_ranges:extras['midi_cc_previous_ranges'] = previous_ranges
+                else:extras.pop('midi_cc_previous_ranges', None)
                 if previous:extras['midi_cc_previous']=previous
                 else:extras.pop('midi_cc_previous',None)
                 if bindings:extras['midi_cc']=bindings
                 else:extras.pop('midi_cc',None)
+                if key not in bindings:
+                    ranges.pop(key, None)
+                if ranges:
+                    extras['midi_cc_ranges'] = ranges
+                else:
+                    extras.pop('midi_cc_ranges', None)
                 slot=replace(slot,extras=tuple(extras.items()))
             updated.append(slot)
         if not found:raise ValueError('channel effect identity')
@@ -205,6 +240,41 @@ class ChannelAudioEffects:
             # before exposing failure;never move this cleanup to another thread.
             if not self.effects.bass.BASS_ChannelLock(self.stream,False):raise RuntimeError('channel FX retained unlock')
         if result!=1:raise RuntimeError('channel FX MIDI application')
+
+    def replay_native_reset(self,report):
+        channel=report['channel']
+        with self._lock:
+            rack=self._racks.get(channel)
+            if rack is None or rack._topology_graph is None:raise ValueError('channel audio FX Reset owner')
+            rack._topology_graph.replay_channel_reset(report)
+            if report['phase']==0:
+                slots,enabled=self._states.get(channel,((),True))
+                graph=rack._topology_graph
+                learned={}
+                for reuse,parameter,cc in report['learned_bindings']:
+                    kind,identity=graph.reuse_keys[reuse-1]
+                    key=AUDIO_FX_PARAMETERS[kind][parameter].key
+                    learned.setdefault(identity,{})[key]=cc
+                updated=[]
+                for slot in slots:
+                    restored=self._reset_slot(slot)
+                    bindings=learned.get(slot.identity)
+                    if bindings:
+                        extras=dict(restored.extras)
+                        extras['midi_cc']={**audio_fx_cc_bindings(restored),**bindings}
+                        # A completed Learn uses the staged range, even if
+                        # the Python subscriber did not see the CC first.
+                        ranges=dict(extras.get('midi_cc_ranges',{}))
+                        current=dict(slot.extras).get('midi_cc_ranges',{})
+                        for key in bindings:
+                            if key in current:ranges[key]=current[key]
+                            else:ranges.pop(key,None)
+                        if ranges:extras['midi_cc_ranges']=ranges
+                        else:extras.pop('midi_cc_ranges',None)
+                        restored=replace(restored,extras=tuple(extras.items()))
+                    updated.append(restored)
+                self._states[channel]=(tuple(updated),enabled)
+                self.revision+=1
 
     def reset_values(self,channel):
         """Reset values only; retain processor IDs/order, bypass and metadata."""
@@ -231,7 +301,7 @@ class ChannelAudioEffects:
                     values=tuple(value if i in forced or value!=old.values[i] else actual.values[i]
                         for i,value in enumerate(slot.values))
                     extras=dict(slot.extras);owned=dict(actual.extras)
-                    for key in ('midi_cc','midi_cc_previous','reset_defaults'):
+                    for key in ('midi_cc','midi_cc_previous','midi_cc_ranges','midi_cc_previous_ranges','reset_defaults'):
                         extras.pop(key,None)
                         if key in owned:extras[key]=owned[key]
                     slot=replace(slot,values=values,extras=tuple(extras.items()),
@@ -251,7 +321,7 @@ class ChannelAudioEffects:
 
     def clear_assignments(self,channel=None):
         def cleared(slot):
-            extras={key:value for key,value in slot.extras if key not in ('midi_cc','midi_cc_previous')}
+            extras={key:value for key,value in slot.extras if key not in ('midi_cc','midi_cc_previous','midi_cc_ranges','midi_cc_previous_ranges')}
             return replace(slot,extras=tuple(extras.items()))
         return self._edit_configuration(channel,cleared)
 
@@ -441,6 +511,8 @@ class ChannelAudioEffects:
         return True
 
     def binding(self,channel):
+        if isinstance(channel,tuple):
+            return ChannelAudioFXGroupBinding(self,channel)
         return ChannelAudioFXBinding(self,channel)
 
 
@@ -452,3 +524,188 @@ class ChannelAudioFXBinding:
         return self.manager.request_controls(self.channel,slots,enabled,previous,force_parameters)
     def poll_audio_fx(self,token):return self.manager.poll(token)
     def completed_audio_fx_request(self,token):return self.manager.completed(token)
+    def assign_cc(self,identity,parameter,source,*,value_range=None):
+        return self.manager.assign_cc(self.channel,identity,parameter,source,value_range=value_range)
+
+
+class ChannelAudioFXGroupBinding:
+    """Bulk edits over existing per-channel owners, with independent slot IDs."""
+
+    def __init__(self,manager,channels):
+        self.manager=manager
+        self.channels=tuple(channels)
+        self.channel=self.channels
+        self._enabled=True
+        self._targets={}
+        self._shared=set()
+        self._view_states={}
+
+    def _indexed(self,slots):
+        counts={}
+        rows={}
+        for slot in slots:
+            if (slot.kind,slot.identity) in self._shared:
+                rows[f'linked:{slot.kind}:{slot.identity}']=slot
+                continue
+            occurrence=counts.get(slot.kind,0)
+            counts[slot.kind]=occurrence+1
+            rows[f'group:{slot.kind}:{occurrence}']=slot
+        return rows
+
+    def _states(self):
+        self.manager.sync_midi()
+        with self.manager._lock:
+            states={ch:self.manager._states.get(ch,((),True)) for ch in self.channels}
+            for (ch,_token),state in self.manager._requests.items():
+                if ch in states:states[ch]=state
+        return states
+
+    def snapshot(self):
+        states=self._states()
+        self._view_states=states
+        merged={}
+        counts={}
+        for slots,_enabled in states.values():
+            for slot in slots:
+                key=slot.kind,slot.identity
+                counts[key]=counts.get(key,0)+1
+        self._shared={key for key,count in counts.items() if count>1}
+        self._targets={}
+        for channel,(slots,_enabled) in states.items():
+            for identity,slot in self._indexed(slots).items():
+                merged.setdefault(identity,replace(slot,identity=identity))
+                self._targets.setdefault(channel,{})[identity]=slot.identity
+        self._enabled=all(enabled for _slots,enabled in states.values())
+        return tuple(merged.values()),self._enabled
+
+    def _resolve(self,channel,indexed,identity):
+        targets=self._targets.get(channel,{})
+        if identity in targets:
+            return next((slot for slot in indexed.values() if slot.identity==targets[identity]),None)
+        if identity.startswith('group:'):
+            return None
+        return next((slot for slot in indexed.values() if slot.identity==identity),None)
+
+    def parameter_values(self,identity,number):
+        return tuple(slot.values[number] for channel,(slots,_enabled) in self._view_states.items()
+                     if (slot:=self._resolve(channel,self._indexed(slots),identity)) is not None)
+
+    def enabled_mixed(self):
+        return len({enabled for _slots,enabled in self._view_states.values()})>1
+
+    def slot_enabled_values(self,identity):
+        return tuple(slot.enabled for channel,(slots,_enabled) in self._view_states.items()
+                     if (slot:=self._resolve(channel,self._indexed(slots),identity)) is not None)
+
+    def preview_channel(self,identity):
+        return next((channel for channel,(slots,_enabled) in self._states().items()
+                     if self._resolve(channel,self._indexed(slots),identity) is not None),self.channels[0])
+
+    def cc_sources(self,identity,key):
+        return tuple(audio_fx_cc_bindings(slot).get(key) for channel,(slots,_enabled) in self._view_states.items()
+                     if (slot:=self._resolve(channel,self._indexed(slots),identity)) is not None)
+
+    def validate_slots(self,slots):
+        from effect_control import AUDIO_FX_MAX_SLOTS
+        if len(slots)>len(self.channels)*AUDIO_FX_MAX_SLOTS:raise ValueError('bulk channel effect list')
+        return tuple(slot.validated() for slot in slots)
+
+    def can_add(self):
+        from effect_control import AUDIO_FX_MAX_SLOTS
+        return all(len(slots)<AUDIO_FX_MAX_SLOTS for slots,_enabled in self._states().values())
+
+    def _submit(self,states,operation):
+        receipt={'states':states,'tokens':[],'failed':False,'rollback':False,
+                 'stream':self.manager.stream,'owner':self.manager.owner,
+                 'generation':getattr(self.manager.owner,'stream_generation',None)}
+        try:
+            for channel in states:
+                token,result=operation(channel)
+                receipt['tokens'].append((token,result))
+                if result is False:
+                    receipt['failed']=True
+                    break
+        except (ValueError,OSError,RuntimeError):
+            receipt['failed']=True
+        result=self.poll_audio_fx(receipt)
+        return receipt,result
+
+    def poll_audio_fx(self,receipt):
+        if (receipt['stream']!=self.manager.stream or receipt['owner'] is not self.manager.owner or
+                receipt['generation']!=getattr(self.manager.owner,'stream_generation',None)):
+            return False
+        results=[self.manager.poll(token) if result is None else result
+                 for token,result in receipt['tokens']]
+        if any(result is None for result in results):return None
+        if receipt['rollback']:return False
+        if receipt['failed'] or not all(results):
+            receipt['rollback']=True
+            receipt['tokens']=[]
+            for channel,(slots,enabled) in receipt['states'].items():
+                try:receipt['tokens'].append(self.manager.request(channel,slots,enabled))
+                except (ValueError,OSError,RuntimeError):receipt['tokens'].append((None,False))
+            return self.poll_audio_fx(receipt)
+        return True
+
+    completed_audio_fx_request=poll_audio_fx
+
+    def request_audio_fx_edit(self,slots,enabled,previous,force_parameters):
+        states=self._states()
+        before={slot.identity:slot for slot in previous}
+        desired={slot.identity:slot for slot in slots}
+        reordered=([slot.identity for slot in slots if slot.identity in before] !=
+                   [slot.identity for slot in previous if slot.identity in desired])
+        prepared={}
+        baselines={}
+        for channel,(current,active) in states.items():
+            indexed=self._indexed(current)
+            covered={actual.identity for identity in before
+                     if (actual:=self._resolve(channel,indexed,identity)) is not None}
+            updated=[]
+            for identity,slot in desired.items():
+                actual=self._resolve(channel,indexed,identity)
+                old=before.get(identity)
+                if old is None:
+                    updated.append(slot)
+                    self._targets.setdefault(channel,{})[identity]=slot.identity
+                    self._shared.add((slot.kind,slot.identity))
+                elif actual is not None:
+                    forced=force_parameters.get(identity,())
+                    values=tuple(value if number in forced or value!=old.values[number]
+                                 else actual.values[number] for number,value in enumerate(slot.values))
+                    updated.append(replace(actual,values=values,
+                        enabled=slot.enabled if '_enabled' in forced or slot.enabled!=old.enabled else actual.enabled))
+            # A channel-local addition accepted after this editor's snapshot
+            # remains owned by that channel, even during a global gesture.
+            updated.extend(slot for slot in indexed.values() if slot.identity not in covered)
+            if not reordered:
+                positions={slot.identity:index for index,slot in enumerate(current)}
+                updated.sort(key=lambda slot:positions.get(slot.identity,len(current)))
+            updated=validate_audio_fx(updated)
+            if len({slot.identity for slot in updated})!=len(updated):
+                raise ValueError('duplicate bulk channel effect identity')
+            target_enabled=enabled if enabled!=self._enabled else active
+            if audio_fx_ini(updated)!=audio_fx_ini(current) or target_enabled!=active:
+                prepared[channel]=(updated,target_enabled)
+                baselines[channel]=(current,active)
+        def apply(channel):
+            updated,active=prepared[channel]
+            return self.manager.request_controls(channel,updated,active,states[channel][0],{})[:2]
+        token,result=self._submit(baselines,apply)
+        self._view_states=self._states()
+        return token,result,tuple(slots)
+
+    def assign_cc(self,identity,parameter,source,*,value_range=None):
+        states=self._states()
+        targets={}
+        for channel,(slots,_enabled) in states.items():
+            slot=self._resolve(channel,self._indexed(slots),identity)
+            if slot is None:continue
+            key=AUDIO_FX_PARAMETERS[slot.kind][parameter].key
+            if source is None and audio_fx_cc_bindings(slot).get(key)!='learn':continue
+            targets[channel]=slot.identity
+        baseline={channel:states[channel] for channel in targets}
+        result=self._submit(baseline,lambda channel:self.manager.assign_cc(channel,targets[channel],
+            parameter,source,value_range=value_range,learn_channels=tuple(targets)))
+        self._view_states=self._states()
+        return result

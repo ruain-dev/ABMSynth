@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
+from product import PRODUCT_NAME, PRODUCT_VERSION
+
 NOTICE_ROOT=Path(__file__).resolve().with_name('licenses')
 
 # Product presentation is separate from licence/provenance metadata. Keep
@@ -70,6 +72,8 @@ def load_notice_catalog(root=NOTICE_ROOT):
     rows=catalog['components']
     if not 1<=len(rows)<=128 or len({row['id'] for row in rows})!=len(rows):raise ValueError('invalid notice components')
     for row in rows:
+        if row['id'] == 'abmsynth':
+            row['name'], row['version'] = PRODUCT_NAME, PRODUCT_VERSION
         url=urlparse(row['homepage'])
         if url.scheme!='https' or not url.netloc or url.username or url.password:raise ValueError('unsafe upstream URL')
         if not 1<=len(row['documents'])<=256:raise ValueError('missing or excessive notice documents')

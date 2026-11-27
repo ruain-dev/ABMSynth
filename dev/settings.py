@@ -52,9 +52,16 @@ class MidiPortSettings:
     Endpoint identities use name plus occurrence, not volatile device numbers.
     """
     ports: tuple = ()
+    DEFAULT_NAME = 'ABMSynth MIDI'
+
+    @classmethod
+    def external_only(cls, *, inputs, outputs, input_routes=None, output_routes=None):
+        return cls((dict(name=cls.DEFAULT_NAME, slot=0, virtual_port=False,
+                         virtual_in=False, virtual_out=False, inputs=inputs, outputs=outputs,
+                         input_routes=input_routes or {}, output_routes=output_routes or {}),)).normalized()
 
     def normalized(self):
-        source=self.ports or ({'name':'ABMSynth MIDI','virtual_in':True,'virtual_out':False,'inputs':[],'outputs':[]},)
+        source=self.ports or (dict(name=self.DEFAULT_NAME,virtual_in=True,virtual_out=False,inputs=[],outputs=[]),)
         if not 1<=len(source)<=8:raise ValueError(tr('midi_ports.invalid_count'))
         result=[];names=set();slots=set()
         for index,row in enumerate(source):
@@ -69,13 +76,54 @@ class MidiPortSettings:
             slots.add(slot)
             item=dict(row,name=name,slot=slot,virtual_in=bool(row.get('virtual_in',True)),virtual_out=bool(row.get('virtual_out',False)))
             if type(row.get('virtual_in',True)) is not bool or type(row.get('virtual_out',False)) is not bool:raise ValueError(tr('midi_ports.invalid_device'))
+            virtual_port=row.get('virtual_port',True)
+            if type(virtual_port) is not bool or (not virtual_port and
+                    (len(source)!=1 or slot!=0 or item['virtual_in'] or item['virtual_out'])):
+                raise ValueError(tr('midi_ports.invalid_device'))
             for direction in ('inputs','outputs'):
                 values=row.get(direction,[])
                 if not isinstance(values,list) or any(not isinstance(v,str) or len(v)>256 for v in values):
                     raise ValueError(tr('midi_ports.invalid_device'))
                 item[direction]=list(dict.fromkeys(values))
+            item.pop('input_routes',None)
+            item.pop('output_routes',None)
             result.append(item)
-        return MidiPortSettings(tuple(sorted(result,key=lambda row:row['slot'])))
+        result.sort(key=lambda row:row['slot'])
+        # External device choices belong to the application. Keep them together
+        # in the first saved row. The default input uses that row's group.
+        for direction in ('inputs','outputs'):
+            devices=list(dict.fromkeys(device for row in result for device in row[direction]))
+            for row in result:
+                row[direction]=[]
+            result[0][direction]=devices
+        input_routes={}
+        output_routes={}
+        for row in source:
+            input_choices=row.get('input_routes',{})
+            if isinstance(input_choices,dict):
+                input_routes.update((key,slot) for key,slot in input_choices.items()
+                                    if isinstance(key,str) and len(key)<=256 and type(slot) is int and slot in slots)
+            output_choices=row.get('output_routes',{})
+            if isinstance(output_choices,dict):
+                for key, choices in output_choices.items():
+                    if not isinstance(key,str) or len(key)>256 or not isinstance(choices,list):continue
+                    valid=sorted({slot for slot in choices if type(slot) is int and slot in slots})
+                    if valid:
+                        output_routes[key]=valid
+                    elif key in result[0]['outputs']:
+                        result[0]['outputs'].remove(key)
+        if input_routes:result[0]['input_routes']=input_routes
+        if output_routes:result[0]['output_routes']=output_routes
+        return MidiPortSettings(tuple(result))
+
+    def device_routes(self, direction):
+        first=self.ports[0]
+        if direction=='inputs':
+            targets=first.get('input_routes',{})
+            return {key:targets.get(key,first['slot']) for key in first['inputs']}
+        targets=first.get('output_routes',{})
+        return {key:sum(1<<slot for slot in targets[key]) if key in targets else 0xff
+                for key in first['outputs']}
 
     def serialized(self):return json.dumps(self.normalized().ports,ensure_ascii=False,separators=(',',':'))
 
@@ -628,15 +676,19 @@ RECORDING_RATE_REJECTIONS = {
     'vorbis': (352800,384000,705600,768000),
     'flac': (705600,768000), 'ogg_flac': (705600,768000),
 }
+NWC_RESET_ACTIONS = ("unchanged", "panic", "reset")
+
 # One apply policy shared by the dialog and runtime snapshot. Login startup
 # registration itself crosses the Save boundary, not the live preview boundary.
+
 LIVE_PREFERENCE_FIELDS = (
+    "shared_update_ms",
     "check_updates_on_startup",
     "main_log_level", "main_log_detail",
     "voices", "interpolation", "midi_cpu_limit",
     "default_reverb_send", "soundfont_fx_policy", "auto_reset_delay_s", "priority",
-    "cc6_direct_pitch_range", "cc94_custom_delay_send",
-    "startup_with_windows", "minimize_to_tray", "close_to_tray",
+    "cc6_direct_pitch_range", "cc94_custom_delay_send", "nwc_reset_action",
+    "startup_with_windows", "minimize_to_tray", "close_to_tray", "always_on_top",
     "windows_midi_default",
     "recording_format", "recording_dither", "recording_rf64", "recording_container",
     "recording_directory", "recording_basename", "recording_timestamp",
@@ -644,7 +696,7 @@ LIVE_PREFERENCE_FIELDS = (
     "recording_opus_complexity", "recording_bitrate", "recording_rate_mode",
 )
 RESTART_PREFERENCE_FIELDS = (
-    "sample_rate", "buffer_ms", "shared_update_ms", "exclusive_block_ms", "midi_async", "loading_mode", "start_minimized", "soundfont_stereo", "synthesis_mode",
+    "sample_rate", "buffer_ms", "exclusive_block_ms", "midi_async", "loading_mode", "start_minimized", "soundfont_stereo", "synthesis_mode",
 )
 # Creation-time audio changes need a running engine restart. Start-minimized
 # only changes a future launch's presentation and should never demand one.
@@ -669,6 +721,7 @@ class EnginePreferences:
     start_minimized: bool = False
     minimize_to_tray: bool = False
     close_to_tray: bool = False
+    always_on_top: bool = False
     # Requested default-on intent. Modern Windows cannot apply it without a
     # Owned WinMM MOD_MAPPER driver; installation is explicit/UAC, preference
     # alone never claims a registered system route. Fresh MIDI hosts see changes.
@@ -680,6 +733,7 @@ class EnginePreferences:
     # historical ABMSynth interpretation unless the user turns it off.
     cc6_direct_pitch_range: bool = True
     cc94_custom_delay_send: bool = True
+    nwc_reset_action: str = "unchanged"
     # bassmidi.h BASS_MIDI_FONT_MINFX/NOFX; default preserves prior summation.
     soundfont_fx_policy: str = "sum"
     # bassmidi.h MIDI_CPU: automatic0; >100 prevents CPU-driven voice killing.
@@ -764,13 +818,15 @@ class EnginePreferences:
             raise ValueError("soundfont_fx_policy")
         if type(self.priority) is not str or self.priority not in PRIORITY_CLASSES:
             raise ValueError("priority")
+        if self.nwc_reset_action not in NWC_RESET_ACTIONS:
+            raise ValueError("nwc_reset_action")
         if type(self.midi_async) is not bool:
             raise ValueError("midi_async")
         if type(self.auto_reset_delay_s) is not int or not 0 <= self.auto_reset_delay_s <= 600:
             raise ValueError("auto_reset_delay_s")
         if type(self.loading_mode) is not int or self.loading_mode not in (0, 1, 2):
             raise ValueError("loading_mode")
-        for key in ("startup_with_windows", "start_minimized", "minimize_to_tray", "close_to_tray",
+        for key in ("startup_with_windows", "start_minimized", "minimize_to_tray", "close_to_tray", "always_on_top",
                     "windows_midi_default", "cc6_direct_pitch_range", "cc94_custom_delay_send"):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(key)
@@ -867,11 +923,13 @@ def engine_ini_values(settings: EnginePreferences) -> dict[str, str]:
         "cc6_direct_pitch_range": "1" if settings.cc6_direct_pitch_range else "0",
         "cc94_custom_delay_send": "1" if settings.cc94_custom_delay_send else "0",
         "auto_reset_delay_s": str(settings.auto_reset_delay_s),
+        "nwc_reset_action": settings.nwc_reset_action,
         "loading_mode": str(settings.loading_mode),
         "startup_with_windows": "1" if settings.startup_with_windows else "0",
         "start_minimized": "1" if settings.start_minimized else "0",
         "minimize_to_tray": "1" if settings.minimize_to_tray else "0",
         "close_to_tray": "1" if settings.close_to_tray else "0",
+        "always_on_top": "1" if settings.always_on_top else "0",
         "windows_midi_default": "1" if settings.windows_midi_default else "0",
     }
 
